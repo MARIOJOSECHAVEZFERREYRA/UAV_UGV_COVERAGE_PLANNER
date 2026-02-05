@@ -36,38 +36,33 @@ class ConcaveDecomposer:
         # 2. Find the FIRST concave vertex that is "Type 2" (obstructive)
         for i in range(n):
             if ConcaveDecomposer._is_concave_topology_mapping(coords, i):
-                # If concave, verify if it is "Type 2" for this flight angle
-                # 
-                if ConcaveDecomposer._is_type_2(coords, i, heading_rad):
-                    # --- CUTTING PHASE (Section 2.4) ---
-                    # Cast ray parallel to heading and cut
-                    
-                    # Debug loop
-                    # print(f"[D{depth}] Cutting at vertex {i} {coords[i]} heading {heading_angle_deg}")
-
-                    sub_polygons = ConcaveDecomposer._split_polygon_at_vertex(polygon, coords[i], heading_rad)
-                    
-                    # Safety check: if nothing was cut, avoid infinite loop
-                    if len(sub_polygons) < 2:
-                        # print(f"⚠️ Split failed to produce sub-polygons at depth {depth}. Skipping this vertex.")
-                        continue 
+                # Check both heading and opposite heading (bidirectional scan)
+                # This is crucial for shapes like Combs or Spirals where the "exit" 
+                # from a concavity might be against the flight direction.
+                test_headings = [heading_rad, heading_rad + np.pi]
+                
+                for cut_heading in test_headings:
+                    if ConcaveDecomposer._is_type_2(coords, i, cut_heading):
+                        # --- CUTTING PHASE ---
+                        sub_polygons = ConcaveDecomposer._split_polygon_at_vertex(polygon, coords[i], cut_heading)
                         
-                    # Cut quality verification
-                    is_trivial = False
-                    for sub in sub_polygons:
-                        # Reject if split produces a tiny sliver (< 10 m^2) or fails to reduce area significantly (> 99.9%)
-                        if sub.area < 10.0 or sub.area > 0.999 * polygon.area:
-                            is_trivial = True
-                            break
-                    
-                    if is_trivial:
-                        continue # Try another vertex
-                        
-                    # Recurse on valid split
-                    result = []
-                    for sub in sub_polygons:
-                        result.extend(ConcaveDecomposer.decompose(sub, heading_angle_deg, depth + 1))
-                    return result
+                        # Verify we actually cut something meaningful
+                        # Filter out trivial splits (slivers)
+                        valid_subs = []
+                        for sub in sub_polygons:
+                            if sub.area > 0.1 and sub.area < 0.999 * polygon.area:
+                                valid_subs.append(sub)
+                                
+                        if len(valid_subs) < 2:
+                            # Try the other direction if this one failed to produce valid pieces
+                            continue 
+                            
+                        # Recurse on valid split
+                        result = []
+                        for sub in sub_polygons:
+                             # Note: Recursion always uses original flight heading for consistency
+                            result.extend(ConcaveDecomposer.decompose(sub, heading_angle_deg, depth + 1))
+                        return result
 
         # If no obstructive concavity was found, the polygon is ready
         return [polygon]
@@ -163,8 +158,10 @@ class ConcaveDecomposer:
         # Let's trust the vector "betweenness" for now but log it.
         # print(f"  Analysing Vertex {i}: Prev={np.degrees(ang_prev):.1f} Flight={np.degrees(ang_flight):.1f} Next={np.degrees(ang_next):.1f}")
         
-        if diff_flight_prev < diff_next_prev:
-            # Flight vector points INTO the cone of the vertex
+        if diff_flight_prev > diff_next_prev:
+            # Flight vector is NOT in the small sector (Exterior). 
+            # It is in the Large Sector (Interior Material).
+            # This means the ray cuts into the polygon.
             # print(f"    -> OBSTRUCTIVE (Type 2) match")
             return True
             

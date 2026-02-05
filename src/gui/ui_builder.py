@@ -20,7 +20,6 @@ class UIBuilder:
         lbl_brand.setStyleSheet("font-size: 26px; color: #ecf0f1; letter-spacing: 2px; margin-bottom: 10px;")
         lbl_brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(lbl_brand)
-        UIBuilder.add_separator(layout)
     
     @staticmethod
     def create_drone_selector(layout, on_change_callback):
@@ -35,46 +34,74 @@ class UIBuilder:
     @staticmethod
     def create_mission_parameters(layout):
         """Create mission parameter controls (swath, tank, speed, etc.)"""
-        params_layout = QFormLayout()
-        params_layout.setSpacing(8)
+        from PyQt6.QtWidgets import QFormLayout, QLabel, QSizePolicy
         
+        # Use standard FormLayout - it handles platform alignment best
+        params_layout = QFormLayout()
+        params_layout.setSpacing(10)
+        params_layout.setContentsMargins(0, 5, 0, 5)
+        
+        from PyQt6.QtGui import QPalette, QColor
+
+        def create_spinbox():
+            sb = QDoubleSpinBox()
+            
+            # Use Palette for colors ensures standard arrows are drawn by Fusion style
+            palette = sb.palette()
+            palette.setColor(QPalette.ColorRole.Base, QColor("#34495e"))
+            palette.setColor(QPalette.ColorRole.Text, QColor("white"))
+            palette.setColor(QPalette.ColorRole.Button, QColor("#34495e")) # For the button background
+            sb.setPalette(palette)
+            
+            
+            # CRITICAL: Prevent vertical stretching/squashing
+            sb.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            sb.setMinimumHeight(30)  
+            return sb
+
+        def add_row(text, widget):
+            lbl = QLabel(text)
+            # Ensure label is visible
+            lbl.setStyleSheet("color: #bdc3c7; font-weight: bold; font-size: 13px;")
+            params_layout.addRow(lbl, widget)
+
         # 1. Work Width (Swath)
-        spin_swath = QDoubleSpinBox()
+        spin_swath = create_spinbox()
         spin_swath.setRange(1.0, 20.0)
         spin_swath.setSingleStep(0.5)
         spin_swath.setSuffix(" m")
-        params_layout.addRow("Swath Width:", spin_swath)
+        add_row("Swath Width:", spin_swath)
         
         # 2. Tank
-        spin_tank = QDoubleSpinBox()
+        spin_tank = create_spinbox()
         spin_tank.setRange(5.0, 100.0)
         spin_tank.setSingleStep(1.0)
         spin_tank.setSuffix(" L")
-        params_layout.addRow("Tank:", spin_tank)
+        add_row("Tank Capacity:", spin_tank)
         
         # 3. Speed
-        spin_speed = QDoubleSpinBox()
+        spin_speed = create_spinbox()
         spin_speed.setRange(1.0, 15.0)
         spin_speed.setSingleStep(0.5)
         spin_speed.setSuffix(" m/s")
-        params_layout.addRow("Speed:", spin_speed)
+        add_row("Flight Speed:", spin_speed)
         
         # 4. Application Rate
-        spin_app_rate = QDoubleSpinBox()
+        spin_app_rate = create_spinbox()
         spin_app_rate.setRange(5.0, 50.0)
         spin_app_rate.setSingleStep(1.0)
         spin_app_rate.setValue(20.0)  # Default 20 L/ha
         spin_app_rate.setSuffix(" L/ha")
-        params_layout.addRow("Application Rate:", spin_app_rate)
+        add_row("Application Rate:", spin_app_rate)
         
         # 5. Station Distance (Offset)
-        spin_truck_offset = QDoubleSpinBox()
+        spin_truck_offset = create_spinbox()
         spin_truck_offset.setRange(0.0, 50.0)
         spin_truck_offset.setSingleStep(1.0)
         spin_truck_offset.setSuffix(" m")
         spin_truck_offset.setValue(0.0)
         spin_truck_offset.setToolTip("Extra distance between field edge and truck route")
-        params_layout.addRow("Station Offset:", spin_truck_offset)
+        add_row("Station Offset:", spin_truck_offset)
         
         layout.addLayout(params_layout)
         
@@ -167,7 +194,6 @@ class UIBuilder:
     @staticmethod
     def create_action_buttons(layout, on_calculate, on_report, on_export):
         """Create main action buttons (CALCULATE, REPORT, EXPORT)"""
-        UIBuilder.add_separator(layout)
         
         # Calculate button
         btn_calc = QPushButton("CALCULATE ROUTE")
@@ -200,11 +226,4 @@ class UIBuilder:
         
         return btn_calc, btn_report, btn_export
     
-    @staticmethod
-    def add_separator(layout):
-        """Add a horizontal separator line"""
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        line.setFrameShadow(QFrame.Shadow.Plain)
-        line.setStyleSheet("background-color: #455a64; max-height: 1px;")
-        layout.addWidget(line)
+

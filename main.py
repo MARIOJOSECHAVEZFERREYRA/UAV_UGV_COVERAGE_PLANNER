@@ -18,6 +18,7 @@ def main():
 
     # Initialize Qt App
     app = QApplication(sys.argv)
+    app.setStyle("Fusion") # Force Fusion style for consistent element rendering
     
     # Create main window
     window = AgriSwarmApp(filename=filename)

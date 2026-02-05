@@ -1,0 +1,62 @@
+{
+    "name": "narrow_passage",
+    "description": "Two large obstacles creating a narrow gap",
+    "boundary": [
+        [
+            0,
+            0
+        ],
+        [
+            100,
+            0
+        ],
+        [
+            100,
+            100
+        ],
+        [
+            0,
+            100
+        ]
+    ],
+    "obstacles": [
+        [
+            [
+                20,
+                1
+            ],
+            [
+                40,
+                1
+            ],
+            [
+                40,
+                45
+            ],
+            [
+                20,
+                45
+            ]
+        ],
+        [
+            [
+                20,
+                55
+            ],
+            [
+                40,
+                55
+            ],
+            [
+                40,
+                99
+            ],
+            [
+                20,
+                99
+            ]
+        ]
+    ],
+    "expected_cells_min": 1,
+    "min_coverage": 0.85
+}

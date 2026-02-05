@@ -114,37 +114,48 @@ class DecompositionStrategy(MissionPlannerStrategy):
     Splits the field into convex cells to handle obstacles topologically.
     """
     def optimize(self, polygon: Polygon, swath_width: float, truck_route: LineString = None) -> dict:
-        # 1. Decompose (Fixed Angle 0 for now)
-        # In a full valid implementation, we might optimize this angle too.
-        angle = 0.0
+        # Boustrophedon / Exact Decomposition with Adaptive Angle
+        # We try 0 (Horizontal) and 90 (Vertical) and pick the one with fewer cells
+        # (Fewer cells = Simpler topology = Better efficiency)
         
-        # Decompose using the existing Algorithm Phase 2
-        sub_polygons = ConcaveDecomposer.decompose(polygon, angle)
+        candidates = []
+        for angle in [0.0, 90.0]:
+            # 1. Decompose
+            sub_polygons = ConcaveDecomposer.decompose(polygon, angle)
+            
+            # 2. Plan paths for cells
+            planner = BoustrophedonPlanner(spray_width=swath_width)
+            full_path = []
+            
+            valid_area = 0.0
+            for sub in sub_polygons:
+                if sub.area < 1.0: continue
+                valid_area += sub.area
+                path, _, _ = planner.generate_path(sub, angle)
+                if path:
+                    full_path.extend(path)
+            
+            if not full_path: continue
+            
+            # Metric: Number of cells (primary), Total path length (secondary)
+            # For now just Cells.
+            candidates.append({
+                'angle': angle,
+                'path': LineString(full_path) if len(full_path) > 1 else None,
+                'cell_count': len(sub_polygons),
+                'metrics': {'angle': angle, 'cell_count': len(sub_polygons)}
+            })
+            
+        if not candidates:
+            return {'path': None, 'angle': 0, 'metrics': {}}
+            
+        # Pick candidate with MINIMUM cell count
+        best = min(candidates, key=lambda x: x['cell_count'])
         
-        full_path = []
-        metrics = {'angle': angle, 'cell_count': len(sub_polygons)}
-        
-        planner = BoustrophedonPlanner(spray_width=swath_width)
-        
-        # 2. Plan each cell
-        # Simple chaining (Order of decomposition)
-        for sub in sub_polygons:
-            # Skip tiny cells
-            if sub.area < 1.0: continue
-            
-            path, _, _ = planner.generate_path(sub, angle)
-            if not path: continue
-            
-            # Connection Logic (Naive Direct)
-            # Optimization: Connect end of prev to closest start of next? 
-            # Or just append. BoustrophedonPlanner returns a list of points.
-            
-            full_path.extend(path)
-            
         return {
-            'path': LineString(full_path) if len(full_path) > 1 else None,
-            'angle': angle,
-            'metrics': metrics
+            'path': best['path'],
+            'angle': best['angle'],
+            'metrics': best['metrics']
         }
 
 class StrategyFactory:

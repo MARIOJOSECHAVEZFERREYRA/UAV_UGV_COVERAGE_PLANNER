@@ -1,0 +1,401 @@
+Test Run - 2026-02-05 17:41:27
+Test Directory: /home/mario/programacion/tesis/agriswarm_planner/tests
+Results Directory: /home/mario/programacion/tesis/agriswarm_planner/data/test_results
+--------------------------------------------------
+test_scenario_comb_shape (test_scenarios.TestScenarios.test_scenario_comb_shape)
+Test scenario from comb_shape.json ... 
+--- Testing Scenario: comb_shape ---
+Description: Vertical Comb to block horizontal sweep (Strict/Hard)
+Pre-calculating caches for 72 angles...
+  Progress: 10/72 angles processed
+  Progress: 20/72 angles processed
+  Progress: 30/72 angles processed
+  Progress: 40/72 angles processed
+  Progress: 50/72 angles processed
+  Progress: 60/72 angles processed
+  Progress: 70/72 angles processed
+✓ Caches built: 72 decompositions, 262 paths
+
+Starting Optimized GA (200 max generations)
+  - Cache: ✓
+  - Parallelization: ✗
+  - Early Stopping: ✓ (patience=50)
+  - Adaptive Population: ✓
+
+   Gen 25/200 | Pop: 150 | Fitness: 12.119211 | Angle: 92.3°
+   Gen 50/200 | Pop: 150 | Fitness: 12.119211 | Angle: 92.3°
+
+✓ Early stopping at generation 51 (no improvement in 50 gens)
+
+✓ Optimization completed in 51 generations
+  Best angle: 92.29°
+  Fitness: 12.119211
+[Scenario: comb_shape] Saved visualization to /home/mario/programacion/tesis/agriswarm_planner/data/test_results/basic/test_result_comb_shape.png
+[comb_shape] Safety Check Passed
+[comb_shape] Coverage: 100.0% (Target: 90.0%)
+ok
+test_scenario_deformed_hexagon (test_scenarios.TestScenarios.test_scenario_deformed_hexagon)
+Test scenario from deformed_hexagon.json ... 
+--- Testing Scenario: deformed_hexagon ---
+Description: Irregular hexagonal field (≤500m) with asymmetric vertices and internal obstacles
+Pre-calculating caches for 72 angles...
+  Progress: 10/72 angles processed
+  Progress: 20/72 angles processed
+  Progress: 30/72 angles processed
+  Progress: 40/72 angles processed
+  Progress: 50/72 angles processed
+  Progress: 60/72 angles processed
+  Progress: 70/72 angles processed
+✓ Caches built: 72 decompositions, 72 paths
+
+Starting Optimized GA (200 max generations)
+  - Cache: ✓
+  - Parallelization: ✗
+  - Early Stopping: ✓ (patience=50)
+  - Adaptive Population: ✓
+
+   Gen 25/200 | Pop: 150 | Fitness: 12.365305 | Angle: 303.5°
+   Gen 50/200 | Pop: 150 | Fitness: 12.425312 | Angle: 303.5°
+   Gen 75/200 | Pop: 75 | Fitness: 12.436556 | Angle: 303.5°
+   Gen 100/200 | Pop: 75 | Fitness: 12.436556 | Angle: 303.5°
+
+✓ Early stopping at generation 110 (no improvement in 50 gens)
+
+✓ Optimization completed in 110 generations
+  Best angle: 303.47°
+  Fitness: 12.436556
+[Scenario: deformed_hexagon] Saved visualization to /home/mario/programacion/tesis/agriswarm_planner/data/test_results/organic/test_result_deformed_hexagon.png
+[deformed_hexagon] Safety Check Passed
+[deformed_hexagon] Coverage: 100.0% (Target: 70.0%)
+ok
+test_scenario_edge_gauntlet (test_scenarios.TestScenarios.test_scenario_edge_gauntlet)
+Test scenario from edge_gauntlet.json ... 
+--- Testing Scenario: edge_gauntlet ---
+Description: Field (650x550m) with obstacles deliberately placed near boundary edges to test edge handling
+Pre-calculating caches for 72 angles...
+  Progress: 10/72 angles processed
+  Progress: 20/72 angles processed
+  Progress: 30/72 angles processed
+  Progress: 40/72 angles processed
+  Progress: 50/72 angles processed
+  Progress: 60/72 angles processed
+  Progress: 70/72 angles processed
+✓ Caches built: 72 decompositions, 72 paths
+
+Starting Optimized GA (200 max generations)
+  - Cache: ✓
+  - Parallelization: ✗
+  - Early Stopping: ✓ (patience=50)
+  - Adaptive Population: ✓
+
+   Gen 25/200 | Pop: 150 | Fitness: 12.579737 | Angle: 183.9°
+   Gen 50/200 | Pop: 150 | Fitness: 12.579737 | Angle: 183.9°
+
+✓ Early stopping at generation 51 (no improvement in 50 gens)
+
+✓ Optimization completed in 51 generations
+  Best angle: 183.87°
+  Fitness: 12.579737
+[Scenario: edge_gauntlet] Saved visualization to /home/mario/programacion/tesis/agriswarm_planner/data/test_results/stress_tests/test_result_edge_gauntlet.png
+[edge_gauntlet] Safety Check Passed
+[edge_gauntlet] Coverage: 100.0% (Target: 70.0%)
+ok
+test_scenario_irregular_peninsula (test_scenarios.TestScenarios.test_scenario_irregular_peninsula)
+Test scenario from irregular_peninsula.json ... 
+--- Testing Scenario: irregular_peninsula ---
+Description: Highly irregular concave boundary (700x600m) resembling a peninsula with internal lagoon obstacles
+Pre-calculating caches for 72 angles...
+  Progress: 10/72 angles processed
+  Progress: 20/72 angles processed
+  Progress: 30/72 angles processed
+  Progress: 40/72 angles processed
+  Progress: 50/72 angles processed
+  Progress: 60/72 angles processed
+  Progress: 70/72 angles processed
+✓ Caches built: 72 decompositions, 294 paths
+
+Starting Optimized GA (200 max generations)
+  - Cache: ✓
+  - Parallelization: ✗
+  - Early Stopping: ✓ (patience=50)
+  - Adaptive Population: ✓
+
+   Gen 25/200 | Pop: 150 | Fitness: 10.703620 | Angle: 182.0°
+   Gen 50/200 | Pop: 150 | Fitness: 10.703620 | Angle: 182.0°
+
+✓ Early stopping at generation 51 (no improvement in 50 gens)
+
+✓ Optimization completed in 51 generations
+  Best angle: 181.98°
+  Fitness: 10.703620
+[Scenario: irregular_peninsula] Saved visualization to /home/mario/programacion/tesis/agriswarm_planner/data/test_results/stress_tests/test_result_irregular_peninsula.png
+[irregular_peninsula] Safety Check Passed
+[irregular_peninsula] Coverage: 99.4% (Target: 75.0%)
+ok
+test_scenario_irregular_triangle (test_scenarios.TestScenarios.test_scenario_irregular_triangle)
+Test scenario from irregular_triangle.json ... 
+--- Testing Scenario: irregular_triangle ---
+Description: Triangular field (≤500m) with highly irregular edges and scattered obstacles
+Pre-calculating caches for 72 angles...
+  Progress: 10/72 angles processed
+  Progress: 20/72 angles processed
+  Progress: 30/72 angles processed
+  Progress: 40/72 angles processed
+  Progress: 50/72 angles processed
+  Progress: 60/72 angles processed
+  Progress: 70/72 angles processed
+✓ Caches built: 72 decompositions, 72 paths
+
+Starting Optimized GA (200 max generations)
+  - Cache: ✓
+  - Parallelization: ✗
+  - Early Stopping: ✓ (patience=50)
+  - Adaptive Population: ✓
+
+   Gen 25/200 | Pop: 150 | Fitness: 12.310364 | Angle: 308.6°
+   Gen 50/200 | Pop: 150 | Fitness: 12.319897 | Angle: 308.6°
+   Gen 75/200 | Pop: 75 | Fitness: 12.321231 | Angle: 308.6°
+   Gen 100/200 | Pop: 75 | Fitness: 12.321231 | Angle: 308.6°
+
+✓ Early stopping at generation 105 (no improvement in 50 gens)
+
+✓ Optimization completed in 105 generations
+  Best angle: 308.56°
+  Fitness: 12.321231
+[Scenario: irregular_triangle] Saved visualization to /home/mario/programacion/tesis/agriswarm_planner/data/test_results/organic/test_result_irregular_triangle.png
+[irregular_triangle] Safety Check Passed
+[irregular_triangle] Coverage: 100.0% (Target: 75.0%)
+ok
+test_scenario_kidney_shape (test_scenarios.TestScenarios.test_scenario_kidney_shape)
+Test scenario from kidney_shape.json ... 
+--- Testing Scenario: kidney_shape ---
+Description: Organic kidney/bean-shaped field (≤500m) with curved appearance and obstacles
+Pre-calculating caches for 72 angles...
+  Progress: 10/72 angles processed
+  Progress: 20/72 angles processed
+  Progress: 30/72 angles processed
+  Progress: 40/72 angles processed
+  Progress: 50/72 angles processed
+  Progress: 60/72 angles processed
+  Progress: 70/72 angles processed
+✓ Caches built: 72 decompositions, 72 paths
+
+Starting Optimized GA (200 max generations)
+  - Cache: ✓
+  - Parallelization: ✗
+  - Early Stopping: ✓ (patience=50)
+  - Adaptive Population: ✓
+
+   Gen 25/200 | Pop: 150 | Fitness: 12.397681 | Angle: 110.6°
+   Gen 50/200 | Pop: 150 | Fitness: 12.404777 | Angle: 110.6°
+   Gen 75/200 | Pop: 75 | Fitness: 12.404777 | Angle: 110.6°
+
+✓ Early stopping at generation 90 (no improvement in 50 gens)
+
+✓ Optimization completed in 90 generations
+  Best angle: 110.60°
+  Fitness: 12.404777
+[Scenario: kidney_shape] Saved visualization to /home/mario/programacion/tesis/agriswarm_planner/data/test_results/organic/test_result_kidney_shape.png
+[kidney_shape] Safety Check Passed
+[kidney_shape] Coverage: 100.0% (Target: 75.0%)
+ok
+test_scenario_narrow_passage (test_scenarios.TestScenarios.test_scenario_narrow_passage)
+Test scenario from narrow_passage.json ... 
+--- Testing Scenario: narrow_passage ---
+Description: Two large obstacles creating a narrow gap
+Pre-calculating caches for 72 angles...
+  Progress: 10/72 angles processed
+  Progress: 20/72 angles processed
+  Progress: 30/72 angles processed
+  Progress: 40/72 angles processed
+  Progress: 50/72 angles processed
+  Progress: 60/72 angles processed
+  Progress: 70/72 angles processed
+✓ Caches built: 72 decompositions, 72 paths
+
+Starting Optimized GA (300 max generations)
+  - Cache: ✓
+  - Parallelization: ✗
+  - Early Stopping: ✓ (patience=50)
+  - Adaptive Population: ✓
+
+   Gen 25/300 | Pop: 200 | Fitness: 16.202363 | Angle: 91.8°
+   Gen 50/300 | Pop: 200 | Fitness: 16.316617 | Angle: 91.8°
+   Gen 75/300 | Pop: 200 | Fitness: 16.316617 | Angle: 91.8°
+
+✓ Early stopping at generation 82 (no improvement in 50 gens)
+
+✓ Optimization completed in 82 generations
+  Best angle: 91.81°
+  Fitness: 16.316617
+[Scenario: narrow_passage] Saved visualization to /home/mario/programacion/tesis/agriswarm_planner/data/test_results/basic/test_result_narrow_passage.png
+[narrow_passage] Safety Check Passed
+[narrow_passage] Coverage: 100.0% (Target: 85.0%)
+ok
+test_scenario_scattered_minefield (test_scenarios.TestScenarios.test_scenario_scattered_minefield)
+Test scenario from scattered_minefield.json ... 
+--- Testing Scenario: scattered_minefield ---
+Description: Large rectangular field (800x700m) with 25 randomly scattered circular-ish obstacles of varying sizes
+Pre-calculating caches for 36 angles...
+  Progress: 10/36 angles processed
+  Progress: 20/36 angles processed
+  Progress: 30/36 angles processed
+✓ Caches built: 36 decompositions, 36 paths
+
+Starting Optimized GA (150 max generations)
+  - Cache: ✓
+  - Parallelization: ✗
+  - Early Stopping: ✓ (patience=50)
+  - Adaptive Population: ✓
+
+   Gen 25/150 | Pop: 100 | Fitness: 10.094817 | Angle: 91.4°
+   Gen 50/150 | Pop: 50 | Fitness: 10.099887 | Angle: 91.4°
+   Gen 75/150 | Pop: 50 | Fitness: 10.099887 | Angle: 91.4°
+
+✓ Early stopping at generation 83 (no improvement in 50 gens)
+
+✓ Optimization completed in 83 generations
+  Best angle: 91.39°
+  Fitness: 10.099887
+[Scenario: scattered_minefield] Saved visualization to /home/mario/programacion/tesis/agriswarm_planner/data/test_results/stress_tests/test_result_scattered_minefield.png
+[scattered_minefield] Safety Check Passed
+[scattered_minefield] Coverage: 100.0% (Target: 65.0%)
+ok
+test_scenario_swiss_cheese (test_scenarios.TestScenarios.test_scenario_swiss_cheese)
+Test scenario from swiss_cheese.json ... 
+--- Testing Scenario: swiss_cheese ---
+Description: Square field with multiple internal obstacles
+Pre-calculating caches for 72 angles...
+  Progress: 10/72 angles processed
+  Progress: 20/72 angles processed
+  Progress: 30/72 angles processed
+  Progress: 40/72 angles processed
+  Progress: 50/72 angles processed
+  Progress: 60/72 angles processed
+  Progress: 70/72 angles processed
+✓ Caches built: 72 decompositions, 72 paths
+
+Starting Optimized GA (300 max generations)
+  - Cache: ✓
+  - Parallelization: ✗
+  - Early Stopping: ✓ (patience=50)
+  - Adaptive Population: ✓
+
+   Gen 25/300 | Pop: 200 | Fitness: 14.678578 | Angle: 92.5°
+   Gen 50/300 | Pop: 200 | Fitness: 14.678578 | Angle: 92.5°
+
+✓ Early stopping at generation 51 (no improvement in 50 gens)
+
+✓ Optimization completed in 51 generations
+  Best angle: 92.48°
+  Fitness: 14.678578
+[Scenario: swiss_cheese] Saved visualization to /home/mario/programacion/tesis/agriswarm_planner/data/test_results/basic/test_result_swiss_cheese.png
+[swiss_cheese] Safety Check Passed
+[swiss_cheese] Coverage: 100.0% (Target: 90.0%)
+ok
+test_scenario_t_junction (test_scenarios.TestScenarios.test_scenario_t_junction)
+Test scenario from t_junction.json ... 
+--- Testing Scenario: t_junction ---
+Description: T-shaped field (≤500m) creating multiple concave regions with strategic obstacle placement
+Pre-calculating caches for 72 angles...
+  Progress: 10/72 angles processed
+  Progress: 20/72 angles processed
+  Progress: 30/72 angles processed
+  Progress: 40/72 angles processed
+  Progress: 50/72 angles processed
+  Progress: 60/72 angles processed
+  Progress: 70/72 angles processed
+✓ Caches built: 72 decompositions, 268 paths
+
+Starting Optimized GA (200 max generations)
+  - Cache: ✓
+  - Parallelization: ✗
+  - Early Stopping: ✓ (patience=50)
+  - Adaptive Population: ✓
+
+   Gen 25/200 | Pop: 150 | Fitness: 11.073239 | Angle: 268.6°
+   Gen 50/200 | Pop: 150 | Fitness: 11.073239 | Angle: 268.6°
+
+✓ Early stopping at generation 51 (no improvement in 50 gens)
+
+✓ Optimization completed in 51 generations
+  Best angle: 268.56°
+  Fitness: 11.073239
+[Scenario: t_junction] Saved visualization to /home/mario/programacion/tesis/agriswarm_planner/data/test_results/organic/test_result_t_junction.png
+[t_junction] Safety Check Passed
+[t_junction] Coverage: 100.0% (Target: 70.0%)
+ok
+test_scenario_twin_corridors (test_scenarios.TestScenarios.test_scenario_twin_corridors)
+Test scenario from twin_corridors.json ... 
+--- Testing Scenario: twin_corridors ---
+Description: Two parallel narrow corridors (750x400m) with obstacles creating bottleneck passages
+Pre-calculating caches for 72 angles...
+  Progress: 10/72 angles processed
+  Progress: 20/72 angles processed
+  Progress: 30/72 angles processed
+  Progress: 40/72 angles processed
+  Progress: 50/72 angles processed
+  Progress: 60/72 angles processed
+  Progress: 70/72 angles processed
+✓ Caches built: 72 decompositions, 72 paths
+
+Starting Optimized GA (200 max generations)
+  - Cache: ✓
+  - Parallelization: ✗
+  - Early Stopping: ✓ (patience=50)
+  - Adaptive Population: ✓
+
+   Gen 25/200 | Pop: 150 | Fitness: 12.715663 | Angle: 351.2°
+   Gen 50/200 | Pop: 150 | Fitness: 12.715663 | Angle: 351.2°
+
+✓ Early stopping at generation 56 (no improvement in 50 gens)
+
+✓ Optimization completed in 56 generations
+  Best angle: 351.23°
+  Fitness: 12.715663
+[Scenario: twin_corridors] Saved visualization to /home/mario/programacion/tesis/agriswarm_planner/data/test_results/stress_tests/test_result_twin_corridors.png
+[twin_corridors] Safety Check Passed
+[twin_corridors] Coverage: 100.0% (Target: 65.0%)
+ok
+test_scenario_u_shape (test_scenarios.TestScenarios.test_scenario_u_shape)
+Test scenario from u_shape.json ... 
+--- Testing Scenario: u_shape ---
+Description: Standard U-Shape Concave Polygon
+Pre-calculating caches for 72 angles...
+  Progress: 10/72 angles processed
+  Progress: 20/72 angles processed
+  Progress: 30/72 angles processed
+  Progress: 40/72 angles processed
+  Progress: 50/72 angles processed
+  Progress: 60/72 angles processed
+  Progress: 70/72 angles processed
+✓ Caches built: 72 decompositions, 181 paths
+
+Starting Optimized GA (200 max generations)
+  - Cache: ✓
+  - Parallelization: ✗
+  - Early Stopping: ✓ (patience=50)
+  - Adaptive Population: ✓
+
+   Gen 25/200 | Pop: 150 | Fitness: 7.670789 | Angle: 348.4°
+   Gen 50/200 | Pop: 150 | Fitness: 7.670789 | Angle: 348.4°
+
+✓ Early stopping at generation 51 (no improvement in 50 gens)
+
+✓ Optimization completed in 51 generations
+  Best angle: 348.42°
+  Fitness: 7.670789
+[Scenario: u_shape] Saved visualization to /home/mario/programacion/tesis/agriswarm_planner/data/test_results/basic/test_result_u_shape.png
+[u_shape] Safety Check Passed
+[u_shape] Coverage: 99.5% (Target: 85.0%)
+ok
+test_hole_avoidance (test_unit_planner.TestObstacleAvoidance.test_hole_avoidance) ... Generated 39 waypoints.
+Plot saved to /home/mario/programacion/tesis/agriswarm_planner/data/test_results/unit/obstacle_test.png
+Intersection type: MultiLineString
+Intersection length: 60.0
+ok
+
+----------------------------------------------------------------------
+Ran 13 tests in 35.970s
+
+OK

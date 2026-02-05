@@ -26,7 +26,10 @@ class AgriSwarmApp(QMainWindow):
         super().__init__()
         self.filename = filename
         self.setWindowTitle("AgriSwarm Planner - Thesis v2.5")
+        
         self.resize(1200, 800)
+        self.setMinimumSize(1024, 768) # Explicit minimum to signal resizability
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         # Apply only global styles (Dialogs, etc). Sidebar has its own.
         self.setStyleSheet(QMESSAGEBOX_STYLE)
 
@@ -47,6 +50,8 @@ class AgriSwarmApp(QMainWindow):
 
         # --- MAIN LAYOUT ---
         main_widget = QWidget()
+        # Explicitly allow resizing
+        main_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setCentralWidget(main_widget)
         layout = QHBoxLayout(main_widget)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -54,6 +59,7 @@ class AgriSwarmApp(QMainWindow):
 
         # 1. MAP (Left)
         self.map_widget = MapWidget(self)
+        self.map_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(self.map_widget, stretch=1)
 
         # Connect Signals
@@ -97,11 +103,17 @@ class AgriSwarmApp(QMainWindow):
             side_layout, self.clear_canvas, self.load_field
         )
         
+        # Tools Layout (Side by Side to save space)
+        tools_layout = QHBoxLayout()
+        tools_layout.setSpacing(10)
+        side_layout.addLayout(tools_layout)
+
         # Custom Route Button
-        self.btn_draw_route = UIBuilder.create_custom_route_button(side_layout, self.toggle_draw_route)
+        self.btn_draw_route = UIBuilder.create_custom_route_button(tools_layout, self.toggle_draw_route)
+        self.btn_draw_route.setText("DRAW ROUTE") # Shorten text for side-by-side
         
         # Obstacle Button
-        self.btn_draw_obstacle = UIBuilder.create_obstacle_button(side_layout, self.toggle_draw_obstacle)
+        self.btn_draw_obstacle = UIBuilder.create_obstacle_button(tools_layout, self.toggle_draw_obstacle)
         
         
         # Visual Options
@@ -116,6 +128,9 @@ class AgriSwarmApp(QMainWindow):
         self.btn_calc, self.btn_report_window, self.btn_export = UIBuilder.create_action_buttons(
             side_layout, self.run_optimization, self.show_comparative_report, self.export_mission
         )
+        
+        # Spacer to push everything up
+        side_layout.addStretch()
 
         self.map_widget.clear_map()        
         self.on_drone_changed(self.combo_drones.currentText())        
@@ -156,13 +171,6 @@ class AgriSwarmApp(QMainWindow):
         self.spin_speed.setEnabled(True)
         self.spin_app_rate.setEnabled(True)
         self.combo_drones.setEnabled(True)
-
-    def add_separator(self, layout):
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        line.setFrameShadow(QFrame.Shadow.Plain)
-        line.setStyleSheet("background-color: #455a64; max-height: 1px;")
-        layout.addWidget(line)
 
     # --- LOGIC ---
 
@@ -357,16 +365,29 @@ class AgriSwarmApp(QMainWindow):
 
         try:
             self.filename = filename 
-            poly = FieldIO.load_field(self.filename)
+            # Load Boundary AND Obstacles
+            poly, obstacles = FieldIO.load_field(self.filename)
             
-            # FORCE 2D: Strip Z coordinate if present to avoid "too many values to unpack" errors
-            # shapely coords can be (x, y, z), but our logic expects (x, y)
+            # FORCE 2D: Strip Z coordinate if present
             raw_coords = list(poly.exterior.coords)
             self.points = [(p[0], p[1]) for p in raw_coords][:-1]            
             self.polygon = Polygon(self.points) 
 
+            # Load Obstacles into MapWidget
+            self.map_widget.obstacle_polygons = obstacles
+            self.map_widget.obstacle_items = [] # Clear old visual items list (MapWidget handles redraw)
+
             self.best_path = None
+            
+            # Draw Field
             self.map_widget.draw_editor_state(self.points)
+            
+            # Draw Obstacles (We need to explicitly trigger this or add logic in draw_editor_state)
+            # draw_editor_state usually just clears and draws boundary. 
+            # We should manually call redraw or ensure draw_obstacles is called.
+            # MapWidget.paintEvent handles drawing based on self.points and self.obstacle_polygons
+            self.map_widget.update() 
+            
             self.setWindowTitle(f"AgriSwarm Planner - {filename.split('/')[-1]}")
             self.update_ui_state()
         except Exception as e:
@@ -733,3 +754,13 @@ class AgriSwarmApp(QMainWindow):
     def on_algo_toggled(self, state):
         # Optional: Warn if decomposition is experimental or show info
         pass
+
+    def keyPressEvent(self, event):
+        """Handle keyboard shortcuts"""
+        if event.key() == Qt.Key.Key_F11:
+            if self.isFullScreen():
+                self.showNormal()
+            else:
+                self.showFullScreen()
+        else:
+            super().keyPressEvent(event)

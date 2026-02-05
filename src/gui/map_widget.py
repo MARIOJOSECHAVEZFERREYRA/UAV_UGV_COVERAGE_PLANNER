@@ -316,7 +316,7 @@ class MapWidget(QGraphicsView):
              if len(obs_points) < 3: continue
              poly = QPolygonF([QPointF(p[0], p[1]) for p in obs_points])
              item = self.scene.addPolygon(poly, pen, brush)
-             item.setZValue(3)
+             item.setZValue(0.5) # Just above field fill (0), below everything else
              self.obstacle_finished_items.append(item)
              
         # Draw Temp
@@ -343,7 +343,7 @@ class MapWidget(QGraphicsView):
                  pen_dash.setStyle(Qt.PenStyle.DashLine)
                  pen_dash.setCosmetic(True)
                  line_item = self.scene.addPath(path, pen_dash)
-                 line_item.setZValue(3)
+                 line_item.setZValue(0.6) # Slightly above finished obstacles
                  self.obstacle_temp_items.append(line_item)
             
     def draw_service_route(self, is_temp=False):

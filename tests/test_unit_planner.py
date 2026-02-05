@@ -11,6 +11,15 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../src'
 from algorithms.path_planner import BoustrophedonPlanner
 
 class TestObstacleAvoidance(unittest.TestCase):
+    def setUp(self):
+        # Path Handling
+        self.test_dir = os.path.dirname(os.path.abspath(__file__))
+        self.project_root = os.path.dirname(self.test_dir)
+        self.results_dir = os.path.join(self.project_root, 'data', 'test_results')
+        
+        # Ensure results dir exists
+        if not os.path.exists(self.results_dir):
+            os.makedirs(self.results_dir)
     def test_hole_avoidance(self):
         # 1. Create a 100x100 field with a 20x20 hole in the center
         # Field: (0,0) to (100,100)
@@ -92,8 +101,12 @@ class TestObstacleAvoidance(unittest.TestCase):
         ax.set_aspect('equal')
         ax.legend()
         plt.title("Obstacle Avoidance Test")
-        plt.savefig(filename)
-        print(f"Plot saved to {filename}")
+        
+        # Save to unit/ subdirectory
+        unit_dir = os.path.join(self.results_dir, 'unit')
+        full_path = os.path.join(unit_dir, filename)
+        plt.savefig(full_path)
+        print(f"Plot saved to {full_path}")
 
 if __name__ == '__main__':
     unittest.main()

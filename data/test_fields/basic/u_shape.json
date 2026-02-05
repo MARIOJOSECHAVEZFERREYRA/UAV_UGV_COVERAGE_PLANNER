@@ -1,0 +1,41 @@
+{
+    "name": "u_shape",
+    "description": "Standard U-Shape Concave Polygon",
+    "boundary": [
+        [
+            0,
+            0
+        ],
+        [
+            100,
+            0
+        ],
+        [
+            100,
+            100
+        ],
+        [
+            0,
+            100
+        ],
+        [
+            0,
+            60
+        ],
+        [
+            60,
+            60
+        ],
+        [
+            60,
+            40
+        ],
+        [
+            0,
+            40
+        ]
+    ],
+    "obstacles": [],
+    "expected_cells_min": 2,
+    "min_coverage": 0.85
+}

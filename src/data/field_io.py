@@ -26,12 +26,31 @@ class FieldIO:
         print(f"Field saved to: {filename}")
 
     @staticmethod
-    def load_field(filename: str) -> Polygon:
-        """Loads a polygon from a JSON file."""
+    def load_field(filename: str):
+        """
+        Loads a polygon from a JSON file.
+        Supports Legacy format: {"coordinates": [...]}
+        Supports New format:    {"boundary": [...], "obstacles": [[[x,y],...]]}
+        
+        Returns:
+            tuple: (shapely.geometry.Polygon, list_of_list_of_points_obstacles)
+        """
         if not os.path.exists(filename):
             raise FileNotFoundError(f"File not found: {filename}")
             
         with open(filename, 'r') as f:
             data = json.load(f)
             
-        return Polygon(data["coordinates"])
+        # Determine format
+        if "boundary" in data:
+            # New Format
+            coords = data["boundary"]
+            obstacles = data.get("obstacles", [])
+        elif "coordinates" in data:
+            # Legacy Format (No obstacles support)
+            coords = data["coordinates"]
+            obstacles = []
+        else:
+            raise KeyError("Invalid JSON: Must contain 'boundary' or 'coordinates'")
+            
+        return Polygon(coords), obstacles
