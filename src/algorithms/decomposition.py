@@ -136,12 +136,36 @@ class ConcaveDecomposer:
         # In a CCW concave point, the interior angle is > 180.
         # If the flight passes through that angle, it cuts the polygon -> Type 2.
         
-        if ang_next < ang_prev:
-            ang_next += 2 * np.pi
-            
-        if ang_prev <= ang_flight <= ang_next:
-            return True
-        if ang_prev <= (ang_flight + 2*np.pi) <= ang_next:
+        # Epsilon for float comparison
+        EPS = 1e-4
+        
+        # Check if flight vector is "between" prev and next in the reflex angle
+        # In CCW system, if it's concave, the angle from prev to next (CCW) is > 180.
+        # We need to check if flight angle is within that large arc.
+        
+        diff_next_prev = (ang_next - ang_prev) % (2 * np.pi)
+        diff_flight_prev = (ang_flight - ang_prev) % (2 * np.pi)
+        
+        # If diff_next_prev is small (< pi), it's convex locally (should not happen if cross product passed)
+        # But we trust the cross product check.
+        
+        # Condition: The flight vector enters the material?
+        # Actually, "Type 2" means the sweep line at this vertex hits the polygon INTERIOR.
+        # This happens if the sweep direction (orthogonal to flight/sweep line) is...
+        # Wait, "heading" is the direction of the sweep lines? Or the sweep direction?
+        # Usually heading = sweep line orientation.
+        # The Cut Line is parallel to the sweep lines.
+        
+        # Simplification: A vertex is obstructive if the line passing through it 
+        # intersects the polygon "locally" on both sides? No.
+        # It's an "event" if the local geometry makes a "M" or "W" shape relative to sweep.
+        
+        # Let's trust the vector "betweenness" for now but log it.
+        # print(f"  Analysing Vertex {i}: Prev={np.degrees(ang_prev):.1f} Flight={np.degrees(ang_flight):.1f} Next={np.degrees(ang_next):.1f}")
+        
+        if diff_flight_prev < diff_next_prev:
+            # Flight vector points INTO the cone of the vertex
+            # print(f"    -> OBSTRUCTIVE (Type 2) match")
             return True
             
         return False

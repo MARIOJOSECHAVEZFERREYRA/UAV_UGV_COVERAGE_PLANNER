@@ -48,10 +48,19 @@ class MissionSegmenter:
 
 
     def _is_spraying(self, p1, p2, polygon):
-        """Determines if segment is spraying (inside field) or transit (outside)."""
+        """Determines if segment is spraying (inside field) or transit (outside/boundary)."""
         line = LineString([p1[:2], p2[:2]])
         mid = line.interpolate(0.5, normalized=True)
-        return polygon.buffer(1e-9).contains(mid)
+        
+        # Check 1: If on Boundary -> TRANSIT (No Spray)
+        # This handles obstacle avoidance paths and headland travels
+        if polygon.boundary.distance(mid) < 0.1: # 10cm tolerance
+            return False
+            
+        # Check 2: If strictly inside -> SPRAY
+        # buffer(1e-9) is used to handle float precision for points *just* inside
+        # but combined with boundary check above, true interior points are safe.
+        return polygon.contains(mid)
 
 
 

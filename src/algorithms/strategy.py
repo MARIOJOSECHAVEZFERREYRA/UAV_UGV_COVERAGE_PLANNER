@@ -2,7 +2,9 @@ from abc import ABC, abstractmethod
 from shapely.geometry import Polygon, LineString
 import math
 from .genetic_optimizer import GeneticOptimizer
+from .genetic_optimizer import GeneticOptimizer
 from .path_planner import BoustrophedonPlanner
+from .decomposition import ConcaveDecomposer
 
 class MissionPlannerStrategy(ABC):
     """
@@ -106,6 +108,45 @@ class SimpleGridStrategy(MissionPlannerStrategy):
             'metrics': best['metrics']
         }
 
+class DecompositionStrategy(MissionPlannerStrategy):
+    """
+    Formal Strategy: Cellular Decomposition.
+    Splits the field into convex cells to handle obstacles topologically.
+    """
+    def optimize(self, polygon: Polygon, swath_width: float, truck_route: LineString = None) -> dict:
+        # 1. Decompose (Fixed Angle 0 for now)
+        # In a full valid implementation, we might optimize this angle too.
+        angle = 0.0
+        
+        # Decompose using the existing Algorithm Phase 2
+        sub_polygons = ConcaveDecomposer.decompose(polygon, angle)
+        
+        full_path = []
+        metrics = {'angle': angle, 'cell_count': len(sub_polygons)}
+        
+        planner = BoustrophedonPlanner(spray_width=swath_width)
+        
+        # 2. Plan each cell
+        # Simple chaining (Order of decomposition)
+        for sub in sub_polygons:
+            # Skip tiny cells
+            if sub.area < 1.0: continue
+            
+            path, _, _ = planner.generate_path(sub, angle)
+            if not path: continue
+            
+            # Connection Logic (Naive Direct)
+            # Optimization: Connect end of prev to closest start of next? 
+            # Or just append. BoustrophedonPlanner returns a list of points.
+            
+            full_path.extend(path)
+            
+        return {
+            'path': LineString(full_path) if len(full_path) > 1 else None,
+            'angle': angle,
+            'metrics': metrics
+        }
+
 class StrategyFactory:
     """
     Factory to create strategies based on name.
@@ -116,5 +157,7 @@ class StrategyFactory:
             return GeneticStrategy()
         elif name.lower() == "simple":
             return SimpleGridStrategy()
+        elif name.lower() == "decomposition":
+            return DecompositionStrategy()
         else:
             raise ValueError(f"Unknown strategy: {name}")

@@ -120,6 +120,20 @@ class UIBuilder:
         btn_draw_route.clicked.connect(on_toggle)
         layout.addWidget(btn_draw_route)
         return btn_draw_route
+
+    @staticmethod
+    def create_obstacle_button(layout, on_toggle):
+        """Create the obstacle drawing button"""
+        btn_obstacle = QPushButton("ADD OBSTACLE")
+        btn_obstacle.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_obstacle.setStyleSheet(
+            "background-color: #7f8c8d; color: white; border: none; "
+            "padding: 10px; font-weight: bold; border-radius: 4px;"
+        )
+        btn_obstacle.setCheckable(True)
+        btn_obstacle.clicked.connect(on_toggle)
+        layout.addWidget(btn_obstacle)
+        return btn_obstacle
     
     @staticmethod
     def create_visual_options(layout, on_swath_toggled, on_static_toggled):
@@ -139,6 +153,16 @@ class UIBuilder:
         layout.addWidget(chk_mode_static)
         
         return chk_swath, chk_mode_static
+    
+    @staticmethod
+    def create_algorithm_selector(layout, on_algo_toggled):
+        """Create algorithm selection checkbox"""
+        chk_algo = QCheckBox("Use Formal Decomposition (Thesis)")
+        chk_algo.setStyleSheet("color: #2ecc71; font-weight: bold;")
+        chk_algo.setToolTip("Enables Boustrophedon Cellular Decomposition for complex obstacles")
+        chk_algo.stateChanged.connect(on_algo_toggled)
+        layout.addWidget(chk_algo)
+        return chk_algo
     
     @staticmethod
     def create_action_buttons(layout, on_calculate, on_report, on_export):

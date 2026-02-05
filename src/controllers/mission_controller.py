@@ -20,7 +20,7 @@ class MissionController:
     def run_mission_planning(self, polygon_points, drone_name, overrides, 
                              truck_route_points=None, truck_offset=0.0, 
                              use_mobile_station=True, strategy_name="genetic",
-                             precalculated_path=None):
+                             precalculated_path=None, obstacle_polygons=None):
         """
         Executes the full mission planning workflow.
         
@@ -33,6 +33,7 @@ class MissionController:
             use_mobile_station (bool): Whether to calculate mobile station logistics.
             strategy_name (str): optimization strategy ("genetic" or "simple").
             precalculated_path (LineString, optional): Existing path to reuse (skips optimization).
+            obstacle_polygons (list, optional): List of list of (x, y) tuples for holes.
             
         Returns:
             dict: Mission results containing geometry, cycles, metrics, and compatibility info.
@@ -42,7 +43,10 @@ class MissionController:
         if len(polygon_points) < 3:
             raise ValueError("Polygon must have at least 3 points.")
             
-        polygon = Polygon(polygon_points)
+        # Construct Polygon with Holes (if any)
+        holes = obstacle_polygons if obstacle_polygons else []
+        polygon = Polygon(shell=polygon_points, holes=holes)
+        
         if not polygon.is_valid:
             polygon = polygon.buffer(0)
             

@@ -57,9 +57,10 @@ class AgriSwarmApp(QMainWindow):
         layout.addWidget(self.map_widget, stretch=1)
 
         # Connect Signals
-        self.map_widget.map_clicked.connect(self.on_map_left_click)
-        self.map_widget.map_right_clicked.connect(self.on_map_right_click)
-        self.map_widget.point_moved.connect(self.on_point_moved)
+        # Use UniqueConnection to prevent duplicate signal handling (Fixes Right-Click X3 bug)
+        self.map_widget.map_clicked.connect(self.on_map_left_click, Qt.ConnectionType.UniqueConnection)
+        self.map_widget.map_right_clicked.connect(self.on_map_right_click, Qt.ConnectionType.UniqueConnection)
+        self.map_widget.point_moved.connect(self.on_point_moved, Qt.ConnectionType.UniqueConnection)
 
         # 2. SIDEBAR (Right) - Stacked (Control Panel / Report)
         self.sidebar_stack = QStackedWidget()
@@ -99,11 +100,17 @@ class AgriSwarmApp(QMainWindow):
         # Custom Route Button
         self.btn_draw_route = UIBuilder.create_custom_route_button(side_layout, self.toggle_draw_route)
         
+        # Obstacle Button
+        self.btn_draw_obstacle = UIBuilder.create_obstacle_button(side_layout, self.toggle_draw_obstacle)
+        
         
         # Visual Options
         self.chk_swath, self.chk_mode_static = UIBuilder.create_visual_options(
             side_layout, self.on_swath_toggled, self.toggle_visualization_mode
         )
+
+        # Algorithm Selection (Thesis Feature)
+        self.chk_algo_formal = UIBuilder.create_algorithm_selector(side_layout, self.on_algo_toggled)
 
         
         self.btn_calc, self.btn_report_window, self.btn_export = UIBuilder.create_action_buttons(
@@ -122,20 +129,22 @@ class AgriSwarmApp(QMainWindow):
         has_field = has_polygon or has_points
         
         is_drawing = self.btn_draw_route.isChecked()
+        is_obstacle_mode = self.btn_draw_obstacle.isChecked()
         has_results = self.best_path is not None
         
         # 1. Controls dependent on Field
-        self.btn_draw_route.setEnabled(has_polygon)  # Route drawing only works with a closed polygon
+        self.btn_draw_route.setEnabled(has_polygon and not is_obstacle_mode)
+        self.btn_draw_obstacle.setEnabled(has_polygon and not is_drawing)
         self.spin_truck_offset.setEnabled(has_polygon)
         
         # Calc needs field (points or polygon) and NOT be drawing
-        self.btn_calc.setEnabled(has_field and not is_drawing)
+        self.btn_calc.setEnabled(has_field and not is_drawing and not is_obstacle_mode)
         
         # Clear is always available (to reset state)
         self.btn_clear.setEnabled(True)
         
         # Load disabled while drawing
-        self.btn_load.setEnabled(not is_drawing)
+        self.btn_load.setEnabled(not is_drawing and not is_obstacle_mode)
         
         # 2. Controls dependent on Results
         self.btn_export.setEnabled(has_results)
@@ -159,6 +168,13 @@ class AgriSwarmApp(QMainWindow):
 
     def on_map_left_click(self, x, y):
         if self.best_path: return
+        
+        # Obstacle Mode
+        if self.map_widget.draw_mode_obstacle:
+            self.map_widget.temp_obstacle_points.append((x, y))
+            self.map_widget.draw_obstacles()
+            return
+
         self.points.append((x, y))
         self.map_widget.draw_editor_state(self.points)
         
@@ -168,7 +184,21 @@ class AgriSwarmApp(QMainWindow):
             self.update_ui_state()
 
     def on_map_right_click(self, x, y):
+        print(f"DEBUG: Right Click at {x}, {y}. Obstacle Mode: {self.map_widget.draw_mode_obstacle}")
         if self.best_path: return
+        
+        # Obstacle Mode: Right Click = Undo Logic
+        if self.map_widget.draw_mode_obstacle:
+            if self.map_widget.temp_obstacle_points:
+                print("DEBUG: Undoing last obstacle point")
+                # Undo last point
+                self.map_widget.temp_obstacle_points.pop()
+                self.map_widget.draw_obstacles()
+                self.statusBar().showMessage("Point Undo", 1000)
+            else:
+                print("DEBUG: No points to undo")
+            return
+
         if self.points:
             self.points.pop()
             self.map_widget.draw_editor_state(self.points)
@@ -196,7 +226,7 @@ class AgriSwarmApp(QMainWindow):
         self.best_path = None
         self.polygon = None
         self.btn_export.setEnabled(False)
-        self.map_widget.clear_map()
+        self.map_widget.full_reset()
         self.update_ui_state()
 
     def on_truck_offset_changed(self, value):
@@ -267,7 +297,7 @@ class AgriSwarmApp(QMainWindow):
             finally:
                 self._is_recalculating = False
             return
-
+        
         # MANUAL DRAWING SNAP (Original Logic)
         service_points = getattr(self.map_widget, 'service_route_points', [])
         
@@ -345,6 +375,10 @@ class AgriSwarmApp(QMainWindow):
     def toggle_draw_route(self):
         is_drawing = self.btn_draw_route.isChecked()
         
+        # Ensure mutual exclusion
+        if is_drawing and self.btn_draw_obstacle.isChecked():
+            self.btn_draw_obstacle.click() # Toggle off
+
         # Connect/Reconnect Signal to ensure update
         try: self.map_widget.route_length_changed.disconnect(self.on_route_length_update)
         except: pass
@@ -369,6 +403,49 @@ class AgriSwarmApp(QMainWindow):
              self.btn_draw_route.setStyleSheet("background-color: #7f8c8d; color: white; border: none; padding: 10px; font-weight: bold; border-radius: 4px;")
         
         # Update UI state based on drawing mode
+        self.update_ui_state()
+
+    def toggle_draw_obstacle(self):
+        is_active = self.btn_draw_obstacle.isChecked()
+        print(f"DEBUG: toggle_draw_obstacle triggered. Active: {is_active}")
+        
+        # Ensure mutual exclusion
+        if is_active and self.btn_draw_route.isChecked():
+            self.btn_draw_route.click() # Toggle off
+            print("DEBUG: Toggled off route drawing due to exclusion.")
+            
+        if is_active:
+            # Entering Mode
+            print("DEBUG: Entering Obstacle Mode")
+            self.map_widget.set_draw_mode_obstacle(True)
+            self.btn_draw_obstacle.setText("FINISH OBSTACLE")
+            # Red button for active state
+            self.btn_draw_obstacle.setStyleSheet("background-color: #c0392b; color: white; border: none; padding: 10px; font-weight: bold; border-radius: 4px;")
+        else:
+            # Exiting Mode (Commit)
+            print(f"DEBUG: Exiting Obstacle Mode. Points: {len(self.map_widget.temp_obstacle_points)}")
+            if len(self.map_widget.temp_obstacle_points) >= 3:
+                # Commit
+                new_obs = list(self.map_widget.temp_obstacle_points)
+                self.map_widget.obstacle_polygons.append(new_obs)
+                self.statusBar().showMessage("Obstacle Added", 3000)
+                print("DEBUG: Obstacle Added")
+            else:
+                if self.map_widget.temp_obstacle_points:
+                    self.statusBar().showMessage("Obstacle discarded (too few points)", 3000)
+                    print("DEBUG: Obstacle discarded")
+
+            self.map_widget.temp_obstacle_points = []
+            
+            self.map_widget.set_draw_mode_obstacle(False)
+            self.btn_draw_obstacle.setText("ADD OBSTACLE")
+            # Grey button for inactive
+            self.btn_draw_obstacle.setStyleSheet("background-color: #7f8c8d; color: white; border: none; padding: 10px; font-weight: bold; border-radius: 4px;")
+            
+            # Redraw
+            self.map_widget.draw_editor_state(self.points)
+            self.map_widget.draw_obstacles() 
+            
         self.update_ui_state()
 
     def on_route_length_update(self, length):
@@ -467,6 +544,9 @@ class AgriSwarmApp(QMainWindow):
             # Prepare points list
             poly_points = self.points
             
+            # Get Obstacles
+            obstacles = self.map_widget.obstacle_polygons
+            
             result = self.controller.run_mission_planning(
                 polygon_points=poly_points,
                 drone_name=self.current_drone,
@@ -474,7 +554,8 @@ class AgriSwarmApp(QMainWindow):
                 truck_route_points=service_points,
                 truck_offset=truck_offset,
                 use_mobile_station=True,
-                strategy_name="genetic"  # Strategy Pattern: Selectable algorithm
+                strategy_name="decomposition" if self.chk_algo_formal.isChecked() else "genetic", 
+                obstacle_polygons=obstacles # Pass obstacles
             )
             
             # 5. Update State
@@ -648,3 +729,7 @@ class AgriSwarmApp(QMainWindow):
 
     def show_control_panel(self):
         self.sidebar_stack.setCurrentIndex(0)
+
+    def on_algo_toggled(self, state):
+        # Optional: Warn if decomposition is experimental or show info
+        pass

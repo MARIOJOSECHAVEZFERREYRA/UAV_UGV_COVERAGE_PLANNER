@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsItem, QGraphicsTextItem, QGraphicsEllipseItem, QGraphicsRectItem, QGraphicsSimpleTextItem, QGraphicsItemGroup, QGraphicsPolygonItem
+from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsItem, QGraphicsTextItem, QGraphicsEllipseItem, QGraphicsRectItem, QGraphicsSimpleTextItem, QGraphicsItemGroup, QGraphicsPolygonItem, QSizePolicy
 from PyQt6.QtCore import Qt, QPointF, pyqtSignal, QRectF
 from PyQt6.QtGui import QPen, QBrush, QColor, QFont, QPainter, QPolygonF, QWheelEvent, QMouseEvent, QPainterPath
 import math
@@ -108,6 +108,9 @@ class MapWidget(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setBackgroundBrush(QBrush(QColor("#ffffff")))
         
+        # Size Policy to allow maximizing
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        
         self.scale(10, -10)
         
         # Mouse Tracking for Hover Labels
@@ -115,8 +118,17 @@ class MapWidget(QGraphicsView):
         
         # Drawing Mode
         self.draw_mode_route = False
+        self.draw_mode_obstacle = False # New mode for obstacle
         self.temp_route_points = []
         self.service_route_points = [] # Confirmed route
+        
+        self.temp_obstacle_points = []
+        self.obstacle_polygons = [] # List of list of points
+        
+        # Visual Items Tracking (For clearing/redrawing)
+        self.obstacle_finished_items = []
+        self.obstacle_temp_items = []
+        
         self.hover_group = None
         self.hover_text = None
         self.hover_bg = None
@@ -219,6 +231,15 @@ class MapWidget(QGraphicsView):
         self.temp_route_points = []
         self.service_route_points = []
         self.set_draw_mode_route(False)
+        self.set_draw_mode_obstacle(False)
+        
+        # NOTE: WE DO NOT CLEAR OBSTACLES HERE TO PERSIST THEM ACROSS REDRAWS
+        # self.obstacle_polygons = [] 
+        self.temp_obstacle_points = [] 
+        
+        # Reset Visual Item references (they are deleted by scene.clear())
+        self.obstacle_temp_items = []
+        self.obstacle_finished_items = []
         
         # Reset Geometries to prevent Ghost Hover detection
         self.last_polygon_geom = None
@@ -228,12 +249,102 @@ class MapWidget(QGraphicsView):
         # Cache for overlapping labels
         self.label_cache = {}
 
+    def full_reset(self):
+        """Used by the CLEAR button to wipe everything including obstacles"""
+        self.obstacle_polygons = []
+        self.clear_map()
+
     def set_draw_mode_route(self, enabled):
         self.draw_mode_route = enabled
         if enabled:
+            self.set_draw_mode_obstacle(False) # Mutual exclusion
             self.setCursor(Qt.CursorShape.CrossCursor)
-        else:
+        elif not self.draw_mode_obstacle:
             self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def set_draw_mode_obstacle(self, enabled):
+        self.draw_mode_obstacle = enabled
+        if enabled:
+            self.set_draw_mode_route(False) # Mutual exclusion
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        elif not self.draw_mode_route:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def draw_obstacles(self):
+        """Draws finished obstacles and current temp obstacle"""
+        
+        # 1. Clear previous temp items (Fix for Undo visual bug)
+        if not hasattr(self, 'obstacle_temp_items'):
+            self.obstacle_temp_items = []
+            
+        for item in self.obstacle_temp_items:
+            try: self.scene.removeItem(item)
+            except: pass
+        self.obstacle_temp_items = []
+        
+        # Style for Obstacles (Red)
+        pen = QPen(QColor('#c0392b')) # Red
+        pen.setWidth(2)
+        pen.setCosmetic(True)
+        brush = QBrush(QColor(192, 57, 43, 80)) # Red transparent
+        
+        # 2. Finished Obstacles (These are permanent, clear_map handles them? No, we just redraw new ones? 
+        # Wait, if we keep adding polygons, we duplicate them? 
+        # `draw_obstacles` is called incrementally.
+        # But `obstacle_polygons` are persistent.
+        # We should probably clear OLD obstacle polygons too if we call this frequently?
+        # NO. `draw_obstacles` is called on click. It should probably redraw EVERYTHING obstacle related or just temp?
+        # Ideally, finished obstacles are static. But if we want to support deleting them later, we should track them.
+        # For now, let's assume `draw_obstacles` is ONLY for the temp one + redrawing all for simplicity.
+        # BUT `scene.addPolygon` adds new item.
+        # FIX: We should track ALL obstacle items (finished + temp) and redraw them.
+        
+        # Clear finished obstacle items?
+        # Currently we don't track them. They just accumulate in scene.
+        # If `draw_obstacles` is called 10 times, we get 10 copies of finished obstacles!
+        # WE MUST TRACK FINISHED ITEMS TOO.
+        pass # Placeholder for logic below
+        
+        if hasattr(self, 'obstacle_finished_items'):
+             for item in self.obstacle_finished_items:
+                 try: self.scene.removeItem(item)
+                 except: pass
+        self.obstacle_finished_items = []
+
+        # Draw Finished
+        for obs_points in self.obstacle_polygons:
+             if len(obs_points) < 3: continue
+             poly = QPolygonF([QPointF(p[0], p[1]) for p in obs_points])
+             item = self.scene.addPolygon(poly, pen, brush)
+             item.setZValue(3)
+             self.obstacle_finished_items.append(item)
+             
+        # Draw Temp
+        if self.temp_obstacle_points:
+             points = self.temp_obstacle_points
+             for p in points:
+                 # Small marker
+                 r = 4
+                 marker = QGraphicsEllipseItem(-r, -r, r*2, r*2)
+                 marker.setBrush(QBrush(QColor('#e74c3c')))
+                 marker.setPos(p[0], p[1])
+                 marker.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
+                 marker.setZValue(100)
+                 self.scene.addItem(marker)
+                 self.obstacle_temp_items.append(marker)
+             
+             if len(points) > 1:
+                 path = QPainterPath()
+                 path.moveTo(points[0][0], points[0][1])
+                 for p in points[1:]:
+                     path.lineTo(p[0], p[1])
+                 
+                 pen_dash = QPen(QColor('#e74c3c'))
+                 pen_dash.setStyle(Qt.PenStyle.DashLine)
+                 pen_dash.setCosmetic(True)
+                 line_item = self.scene.addPath(path, pen_dash)
+                 line_item.setZValue(3)
+                 self.obstacle_temp_items.append(line_item)
             
     def draw_service_route(self, is_temp=False):
         """Draws the service route (truck)"""
@@ -296,6 +407,7 @@ class MapWidget(QGraphicsView):
     def draw_editor_state(self, points):
         """Draws editable polygon"""
         self.clear_map()
+        self.draw_obstacles()
         if not points: return
 
         # 1. Lines
@@ -384,6 +496,9 @@ class MapWidget(QGraphicsView):
             centroid = polygon_geom.centroid
             area_ha = polygon_geom.area / 10000.0
             self.draw_floating_label(centroid.x, centroid.y, f"{area_ha:.2f} ha", is_area=True)
+
+        # 1.5 Draw Obstacles (Red)
+        self.draw_obstacles()
 
         if safe_geom:
             poly_s = QPolygonF([QPointF(x, y) for x, y in safe_geom.exterior.coords])
@@ -698,9 +813,44 @@ class MapWidget(QGraphicsView):
     # --- EVENTS ---
     
     def wheelEvent(self, event: QWheelEvent):
+        """Zoom Logic"""
         factor = 1.2
-        if event.angleDelta().y() > 0: self.scale(factor, factor)
-        else: self.scale(1/factor, 1/factor)
+        if event.angleDelta().y() > 0:
+             self.scale(factor, factor)
+        else: 
+             self.scale(1/factor, 1/factor)
+             
+        self.viewport().update()
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self.draw_mode_route or self.draw_mode_obstacle:
+                scene_pos = self.mapToScene(event.pos())
+                if self.draw_mode_route:
+                    # Logic for drag start
+                    item = self.scene.itemAt(scene_pos, self.transform())
+                    if item and item.data(1) == "route_point":
+                        self.dragging_point_index = item.data(0)
+                        return
+                elif self.draw_mode_obstacle:
+                    # Obstacle adding
+                    self.map_clicked.emit(scene_pos.x(), scene_pos.y())
+                    return 
+            
+            # Standard click
+            scene_pos = self.mapToScene(event.pos())
+            self.map_clicked.emit(scene_pos.x(), scene_pos.y())
+            
+            # Pan logic
+            self.pan_start = event.pos()
+            self.is_panning = True
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+        elif event.button() == Qt.MouseButton.RightButton:
+            scene_pos = self.mapToScene(event.pos())
+            self.map_right_clicked.emit(scene_pos.x(), scene_pos.y())
+        
+        super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent):
         super().mouseMoveEvent(event)
@@ -716,6 +866,9 @@ class MapWidget(QGraphicsView):
                     self.temp_route_points[self.dragging_point_index] = (x, y)
                     self.draw_service_route(is_temp=True)
             return
+
+        if self.draw_mode_obstacle:
+            return # Block hover effects while drawing obstacles
         
         # 1. Logic for Dragging Points (Priority)
         if self.dragging_point_index is not None:
