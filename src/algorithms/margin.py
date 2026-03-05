@@ -21,9 +21,18 @@ class MarginReducer:
         :param margin_h: Safety distance in meters (h).
         :return: New reduced Polygon with ORIGINAL holes preserved.
         """
-        # Save original holes (obstacles)
-        original_holes = [list(interior.coords) for interior in polygon.interiors]
-        
+        # Save original holes (obstacles), expanding each one outward by margin_h
+        # so the drone keeps at least h meters away from every obstacle boundary.
+        # join_style=2 (Mitre) preserves the corners of rectangular obstacles.
+        expanded_holes = []
+        for interior in polygon.interiors:
+            hole_poly = Polygon(interior.coords)
+            expanded = hole_poly.buffer(margin_h, join_style=2)  # +h: grow away from interior
+            if not expanded.is_empty:
+                if expanded.geom_type == 'MultiPolygon':
+                    expanded = max(expanded.geoms, key=lambda p: p.area)
+                expanded_holes.append(list(expanded.exterior.coords))
+
         # Create polygon from ONLY the exterior (no holes)
         exterior_only = Polygon(polygon.exterior.coords)
         
@@ -36,12 +45,11 @@ class MarginReducer:
             # Keep largest polygon
             shrunken_exterior = max(shrunken_exterior.geoms, key=lambda p: p.area)
         
-        # Re-insert ORIGINAL holes (obstacles) into the shrunken exterior
-        # Only keep holes that are still inside the shrunken boundary
+        # Re-insert EXPANDED holes into the shrunken exterior.
+        # Only keep holes that still fit (partially or fully) inside the shrunken boundary.
         valid_holes = []
-        for hole in original_holes:
+        for hole in expanded_holes:
             hole_poly = Polygon(hole)
-            # Check if hole is still within shrunken exterior
             if shrunken_exterior.contains(hole_poly) or shrunken_exterior.intersects(hole_poly):
                 valid_holes.append(hole)
         

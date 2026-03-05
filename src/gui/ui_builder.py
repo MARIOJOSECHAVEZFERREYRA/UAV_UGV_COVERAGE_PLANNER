@@ -181,15 +181,7 @@ class UIBuilder:
         
         return chk_swath, chk_mode_static
     
-    @staticmethod
-    def create_algorithm_selector(layout, on_algo_toggled):
-        """Create algorithm selection checkbox"""
-        chk_algo = QCheckBox("Use Formal Decomposition (Thesis)")
-        chk_algo.setStyleSheet("color: #2ecc71; font-weight: bold;")
-        chk_algo.setToolTip("Enables Boustrophedon Cellular Decomposition for complex obstacles")
-        chk_algo.stateChanged.connect(on_algo_toggled)
-        layout.addWidget(chk_algo)
-        return chk_algo
+
     
     @staticmethod
     def create_action_buttons(layout, on_calculate, on_report, on_export):

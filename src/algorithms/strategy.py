@@ -4,7 +4,7 @@ import math
 from .genetic_optimizer import GeneticOptimizer
 from .genetic_optimizer import GeneticOptimizer
 from .path_planner import BoustrophedonPlanner
-from .decomposition import ConcaveDecomposer
+
 
 class MissionPlannerStrategy(ABC):
     """
@@ -108,55 +108,6 @@ class SimpleGridStrategy(MissionPlannerStrategy):
             'metrics': best['metrics']
         }
 
-class DecompositionStrategy(MissionPlannerStrategy):
-    """
-    Formal Strategy: Cellular Decomposition.
-    Splits the field into convex cells to handle obstacles topologically.
-    """
-    def optimize(self, polygon: Polygon, swath_width: float, truck_route: LineString = None) -> dict:
-        # Boustrophedon / Exact Decomposition with Adaptive Angle
-        # We try 0 (Horizontal) and 90 (Vertical) and pick the one with fewer cells
-        # (Fewer cells = Simpler topology = Better efficiency)
-        
-        candidates = []
-        for angle in [0.0, 90.0]:
-            # 1. Decompose
-            sub_polygons = ConcaveDecomposer.decompose(polygon, angle)
-            
-            # 2. Plan paths for cells
-            planner = BoustrophedonPlanner(spray_width=swath_width)
-            full_path = []
-            
-            valid_area = 0.0
-            for sub in sub_polygons:
-                if sub.area < 1.0: continue
-                valid_area += sub.area
-                path, _, _ = planner.generate_path(sub, angle)
-                if path:
-                    full_path.extend(path)
-            
-            if not full_path: continue
-            
-            # Metric: Number of cells (primary), Total path length (secondary)
-            # For now just Cells.
-            candidates.append({
-                'angle': angle,
-                'path': LineString(full_path) if len(full_path) > 1 else None,
-                'cell_count': len(sub_polygons),
-                'metrics': {'angle': angle, 'cell_count': len(sub_polygons)}
-            })
-            
-        if not candidates:
-            return {'path': None, 'angle': 0, 'metrics': {}}
-            
-        # Pick candidate with MINIMUM cell count
-        best = min(candidates, key=lambda x: x['cell_count'])
-        
-        return {
-            'path': best['path'],
-            'angle': best['angle'],
-            'metrics': best['metrics']
-        }
 
 class StrategyFactory:
     """
@@ -168,7 +119,5 @@ class StrategyFactory:
             return GeneticStrategy()
         elif name.lower() == "simple":
             return SimpleGridStrategy()
-        elif name.lower() == "decomposition":
-            return DecompositionStrategy()
         else:
             raise ValueError(f"Unknown strategy: {name}")

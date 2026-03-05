@@ -121,8 +121,6 @@ class AgriSwarmApp(QMainWindow):
             side_layout, self.on_swath_toggled, self.toggle_visualization_mode
         )
 
-        # Algorithm Selection (Thesis Feature)
-        self.chk_algo_formal = UIBuilder.create_algorithm_selector(side_layout, self.on_algo_toggled)
 
         
         self.btn_calc, self.btn_report_window, self.btn_export = UIBuilder.create_action_buttons(
@@ -575,7 +573,7 @@ class AgriSwarmApp(QMainWindow):
                 truck_route_points=service_points,
                 truck_offset=truck_offset,
                 use_mobile_station=True,
-                strategy_name="decomposition" if self.chk_algo_formal.isChecked() else "genetic", 
+                strategy_name="genetic",
                 obstacle_polygons=obstacles # Pass obstacles
             )
             
@@ -751,9 +749,6 @@ class AgriSwarmApp(QMainWindow):
     def show_control_panel(self):
         self.sidebar_stack.setCurrentIndex(0)
 
-    def on_algo_toggled(self, state):
-        # Optional: Warn if decomposition is experimental or show info
-        pass
 
     def keyPressEvent(self, event):
         """Handle keyboard shortcuts"""
