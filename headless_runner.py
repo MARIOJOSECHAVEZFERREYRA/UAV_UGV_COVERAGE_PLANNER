@@ -42,7 +42,6 @@ def main():
         'speed': 5.0, # m/s
         'app_rate': 20.0 # L/ha
     }
-    
     drone_name = "DJI Agras T30" # Default drone
     
     print("\n--- Running Mission Planning (Genetic) ---")

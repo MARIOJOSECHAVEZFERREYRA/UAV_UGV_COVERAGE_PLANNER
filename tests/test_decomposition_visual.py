@@ -113,10 +113,10 @@ def _collect(polygon: Polygon, heading_rad: float, steps: list, depth: int):
         if not ConcaveDecomposer._is_concave_topology_mapping(coords, i):
             continue
         is_t2 = ConcaveDecomposer._is_type_2(polygon, coords[i], heading_rad)
-        steps.append({'type': 'type2', 'polygon': polygon, 'vertex': coords[i],
-                      'is_t2': is_t2, 'heading_rad': heading_rad, 'depth': depth})
         if not is_t2:
             continue
+        steps.append({'type': 'type2', 'polygon': polygon, 'vertex': coords[i],
+                      'is_t2': is_t2, 'heading_rad': heading_rad, 'depth': depth})
         subs = ConcaveDecomposer._split_polygon_at_vertex(
             polygon, coords[i], heading_rad)
         valid = [s for s in subs if s.area > 0.1 and s.area < 0.999 * polygon.area]
@@ -128,6 +128,31 @@ def _collect(polygon: Polygon, heading_rad: float, steps: list, depth: int):
             # Re-orient to CCW: shapely split() doesn't guarantee winding order
             _collect(orient(sub, sign=1.0), heading_rad, steps, depth + 1)
         return
+
+    # ── interior ring (obstacle) vertices ──
+    for interior in polygon.interiors:
+        hole_coords = list(interior.coords)
+        if hole_coords[0] == hole_coords[-1]:
+            hole_coords = hole_coords[:-1]
+
+        for vertex in hole_coords:
+            is_t2 = ConcaveDecomposer._is_type_2(polygon, vertex, heading_rad)
+            if not is_t2:
+                continue
+            steps.append({'type': 'hole_t2', 'polygon': polygon, 'vertex': vertex,
+                          'heading_rad': heading_rad, 'depth': depth})
+            subs = ConcaveDecomposer._connect_hole_to_exterior(
+                polygon, vertex, heading_rad)
+            valid = [s for s in subs if s.area > 0.1]
+            holes_before = len(list(polygon.interiors))
+            holes_after = sum(len(list(s.interiors)) for s in valid)
+            if not valid or (holes_after >= holes_before and len(valid) == 1):
+                continue
+            steps.append({'type': 'hole_cut', 'polygon': polygon, 'vertex': vertex,
+                          'heading_rad': heading_rad, 'pieces': valid, 'depth': depth})
+            for sub in valid:
+                _collect(orient(sub, sign=1.0), heading_rad, steps, depth + 1)
+            return
 
     steps.append({'type': 'final', 'polygon': polygon,
                   'heading_rad': heading_rad, 'depth': depth})
@@ -168,15 +193,81 @@ def draw_sweep_probes(ax, polygon, vertex, heading_rad):
                     xytext=(4, 4), textcoords='offset points')
 
 
+def _ray_hit_point(polygon, vertex, heading_rad):
+    """Replicate the unidirectional ray logic from _split_polygon_at_vertex
+    to find the hit point on the boundary, for visualization only."""
+    vx, vy = vertex[0], vertex[1]
+    hx = math.cos(heading_rad)
+    hy = math.sin(heading_rad)
+    eps = max(0.5, polygon.length * 0.002)
+    ray_len = 1e6
+
+    interior_sign = None
+    for sign in (+1.0, -1.0):
+        test_pt = Point(vx + sign * eps * hx, vy + sign * eps * hy)
+        if polygon.contains(test_pt):
+            interior_sign = sign
+            break
+    if interior_sign is None:
+        return None
+
+    dx = interior_sign * hx
+    dy = interior_sign * hy
+    ray_line = LineString([(vx, vy), (vx + ray_len * dx, vy + ray_len * dy)])
+
+    boundary_lines = [polygon.exterior] + list(polygon.interiors)
+    hit_pt = None
+    min_dist = ray_len
+    origin = Point(vx, vy)
+
+    for ring in boundary_lines:
+        inter = ray_line.intersection(ring)
+        if inter.is_empty:
+            continue
+        if inter.geom_type == 'Point':
+            candidates = [inter]
+        elif inter.geom_type == 'MultiPoint':
+            candidates = list(inter.geoms)
+        else:
+            raw = (list(inter.coords)
+                   if hasattr(inter, 'coords')
+                   else [c for g in getattr(inter, 'geoms', [inter])
+                          for c in (g.coords if hasattr(g, 'coords') else [])])
+            candidates = [Point(p) for p in raw]
+        for pt in candidates:
+            d = pt.distance(origin)
+            if d > 1e-6 and d < min_dist:
+                min_dist = d
+                hit_pt = pt
+
+    return hit_pt
+
+
 def draw_cut_line(ax, vertex, heading_rad, polygon):
-    ray = max(polygon.bounds[2]-polygon.bounds[0],
-              polygon.bounds[3]-polygon.bounds[1]) * 2
-    vx, vy = vertex
-    h = np.array([np.cos(heading_rad), np.sin(heading_rad)])
-    ax.plot([vx - ray*h[0], vx + ray*h[0]],
-            [vy - ray*h[1], vy + ray*h[1]],
-            color=C_CUT, lw=2, ls='--', zorder=5, label='Cut line')
-    ax.plot(*vertex, 's', color=C_CUT, ms=10, zorder=6)
+    """Draw the unidirectional ray from the T2 vertex to the first boundary hit."""
+    vx, vy = vertex[0], vertex[1]
+    hit_pt = _ray_hit_point(polygon, vertex, heading_rad)
+
+    if hit_pt is not None:
+        # Unidirectional ray: vertex → first wall hit
+        ax.annotate('', xy=(hit_pt.x, hit_pt.y), xytext=(vx, vy),
+                    arrowprops=dict(arrowstyle='->', color=C_CUT, lw=2,
+                                   mutation_scale=16),
+                    zorder=5)
+        ax.plot([vx, hit_pt.x], [vy, hit_pt.y],
+                color=C_CUT, lw=2, ls='--', zorder=5, label='Cut ray')
+        ax.plot(hit_pt.x, hit_pt.y, 'D', color=C_CUT, ms=8, zorder=6,
+                label='Ray hit point')
+    else:
+        # Fallback: draw full line if hit not found
+        ray = max(polygon.bounds[2]-polygon.bounds[0],
+                  polygon.bounds[3]-polygon.bounds[1]) * 2
+        h = np.array([math.cos(heading_rad), math.sin(heading_rad)])
+        ax.plot([vx - ray*h[0], vx + ray*h[0]],
+                [vy - ray*h[1], vy + ray*h[1]],
+                color=C_CUT, lw=2, ls='--', zorder=5, label='Cut line (fallback)')
+
+    ax.plot(vx, vy, 's', color=C_CUT, ms=10, zorder=6)
 
 
 def draw_path(ax, poly, heading_rad, color=C_PATH):
@@ -242,6 +333,26 @@ STEP_DESC = {
         f"Pieces produced: {len(s['pieces'])}\n\n"
         "Each piece will be processed\n"
         "recursively."
+    ),
+    'hole_t2': lambda s: (
+        f"OBSTACLE TYPE-2 — vertex ({s['vertex'][0]:.1f}, {s['vertex'][1]:.1f})",
+        f"Interior ring (obstacle) vertex\n"
+        f"changes sweep-line topology.\n\n"
+        f"A thin channel will connect\n"
+        f"the obstacle to the exterior,\n"
+        f"turning it into a concavity\n"
+        f"that recursion will cut."
+    ),
+    'hole_cut': lambda s: (
+        f"OBSTACLE CHANNEL CUT",
+        f"Obstacle vertex at\n"
+        f"  ({s['vertex'][0]:.1f}, {s['vertex'][1]:.1f})\n\n"
+        f"Channel erased along heading\n"
+        f"({np.degrees(s['heading_rad']):.0f}°).\n\n"
+        f"Hole absorbed into exterior.\n"
+        f"Pieces: {len(s['pieces'])}\n\n"
+        "Recursion continues on\n"
+        "each piece."
     ),
     'final': lambda s: (
         '✅  FINAL CELL — READY FOR SWEEP',
@@ -384,6 +495,18 @@ class Visualizer:
                              fontsize=9, fontweight='bold', va='center')
 
         elif stype == 'cut':
+            draw_cut_line(self.ax, s['vertex'], s['heading_rad'], s['polygon'])
+            for k, piece in enumerate(s['pieces']):
+                draw_poly(self.ax, piece, CELLS[k % len(CELLS)], alpha=0.28, lw=1.5)
+
+        elif stype == 'hole_t2':
+            draw_sweep_probes(self.ax, s['polygon'], s['vertex'], s['heading_rad'])
+            self.ax.plot(*s['vertex'], '*', color='#E91E63', ms=16, zorder=7)
+            self.ax.annotate('  OBSTACLE T2', s['vertex'], color='#E91E63',
+                             fontsize=9, fontweight='bold', va='center')
+
+        elif stype == 'hole_cut':
+            # Draw channel line from vertex to hit point
             draw_cut_line(self.ax, s['vertex'], s['heading_rad'], s['polygon'])
             for k, piece in enumerate(s['pieces']):
                 draw_poly(self.ax, piece, CELLS[k % len(CELLS)], alpha=0.28, lw=1.5)

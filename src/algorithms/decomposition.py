@@ -1,6 +1,7 @@
 import numpy as np
-from shapely.geometry import Polygon, LineString, Point
-from shapely.ops import split
+from shapely.geometry import Polygon, LineString, Point, box
+from shapely.ops import split, unary_union
+
 from shapely.geometry.polygon import orient
 import math
 
@@ -44,11 +45,31 @@ class ConcaveDecomposer:
                         polygon, coords[i], heading_rad
                     )
 
-                    # Filter degenerate slivers
                     valid_subs = [s for s in sub_polygons
-                                  if s.area > 0.1 and s.area < 0.999 * polygon.area]
+                                  if s.area > 0.1]
 
-                    if len(valid_subs) < 2:
+                    # A cut is degenerate if it produces no large piece,
+                    # OR if it just returned the exact same thing (1 piece, same topology).
+                    # But 1 piece IS valid if a hole was merged to the exterior!
+                    
+                    if not valid_subs:
+                        continue
+                        
+                    is_degenerate = False
+                    if len(valid_subs) == 1:
+                        v = valid_subs[0]
+                        # Check if topology improved (fewer holes)
+                        if len(list(v.interiors)) >= len(list(polygon.interiors)):
+                            is_degenerate = True  # nothing changed or got worse
+                        if v.area < 0.95 * polygon.area:
+                            is_degenerate = True  # lost too much area
+                            
+                    else:
+                        # For >1 pieces, at least one must be reasonably large
+                        if sum(s.area for s in valid_subs) < 0.95 * polygon.area:
+                            is_degenerate = True
+
+                    if is_degenerate:
                         continue  # cut was degenerate, try next vertex
 
                     # Recurse on each piece using the original flight heading.
@@ -57,6 +78,38 @@ class ConcaveDecomposer:
                     result = []
                     for sub in sub_polygons:
                         sub = orient(sub, sign=1.0)  # ensure CCW
+                        result.extend(
+                            ConcaveDecomposer.decompose(sub, heading_angle_deg, depth + 1)
+                        )
+                    return result
+
+        # 3. Check interior ring (obstacle) vertices for Type 2.
+        # Connect the hole to the exterior via a thin channel, turning
+        # the obstacle into exterior concavities that recursion will cut.
+        for interior in polygon.interiors:
+            hole_coords = list(interior.coords)
+            if hole_coords[0] == hole_coords[-1]:
+                hole_coords = hole_coords[:-1]
+
+            for vertex in hole_coords:
+                if ConcaveDecomposer._is_type_2(polygon, vertex, heading_rad):
+                    sub_polygons = ConcaveDecomposer._connect_hole_to_exterior(
+                        polygon, vertex, heading_rad
+                    )
+
+                    valid_subs = [s for s in sub_polygons if s.area > 0.1]
+                    if not valid_subs:
+                        continue
+
+                    # Check for improvement: must reduce total holes
+                    holes_before = len(list(polygon.interiors))
+                    holes_after = sum(len(list(s.interiors)) for s in valid_subs)
+                    if holes_after >= holes_before and len(valid_subs) == 1:
+                        continue
+
+                    result = []
+                    for sub in valid_subs:
+                        sub = orient(sub, sign=1.0)
                         result.extend(
                             ConcaveDecomposer.decompose(sub, heading_angle_deg, depth + 1)
                         )
@@ -138,31 +191,208 @@ class ConcaveDecomposer:
 
 
     @staticmethod
+    def _connect_hole_to_exterior(polygon: Polygon, vertex_coords, heading_rad):
+        """
+        Connects an interior ring (obstacle) to the exterior boundary by
+        erasing a thin channel along the heading direction.  The channel
+        runs from the hole vertex to the nearest boundary hit.
+
+        The resulting polygon has one fewer hole (absorbed into the
+        exterior as a concavity) which recursion will decompose.
+        """
+        from shapely.geometry import MultiPolygon
+
+        ray_len = 1e6
+        vx, vy = vertex_coords[0], vertex_coords[1]
+        hx = np.cos(heading_rad)
+        hy = np.sin(heading_rad)
+
+        # Direction INTO the polygon (away from hole centre)
+        eps = max(0.5, polygon.length * 0.002)
+        interior_sign = None
+        for sign in (+1.0, -1.0):
+            test_pt = Point(vx + sign * eps * hx, vy + sign * eps * hy)
+            if polygon.contains(test_pt):
+                interior_sign = sign
+                break
+
+        if interior_sign is None:
+            return [polygon]
+
+        dx = interior_sign * hx
+        dy = interior_sign * hy
+
+        # Cast ray to find first boundary hit
+        far_pt = Point(vx + ray_len * dx, vy + ray_len * dy)
+        ray_line = LineString([(vx, vy), (far_pt.x, far_pt.y)])
+
+        boundary_lines = [polygon.exterior] + list(polygon.interiors)
+        hit_pt = None
+        min_dist = ray_len
+        origin = Point(vx, vy)
+
+        for ring in boundary_lines:
+            inter = ray_line.intersection(ring)
+            if inter.is_empty:
+                continue
+            if inter.geom_type == 'Point':
+                candidates = [inter]
+            elif inter.geom_type == 'MultiPoint':
+                candidates = list(inter.geoms)
+            elif inter.geom_type in ('LineString', 'MultiLineString'):
+                continue
+            else:
+                candidates = [g for g in getattr(inter, 'geoms', [])
+                              if g.geom_type == 'Point']
+
+            for pt in candidates:
+                d = pt.distance(origin)
+                if d > 1e-6 and d < min_dist:
+                    min_dist = d
+                    hit_pt = pt
+
+        if hit_pt is None:
+            return [polygon]
+
+        # Build a thin channel from slightly inside the hole to slightly
+        # past the hit boundary.
+        ext = 0.1
+        p1 = Point(vx - ext * dx, vy - ext * dy)
+        p2 = Point(hit_pt.x + ext * dx, hit_pt.y + ext * dy)
+
+        channel_line = LineString([p1, p2])
+        channel = channel_line.buffer(0.01, cap_style=2)  # flat cap, 1cm wide
+
+        result = polygon.difference(channel)
+
+        if isinstance(result, MultiPolygon):
+            return list(result.geoms)
+        elif isinstance(result, Polygon):
+            return [result]
+        else:
+            return [polygon]
+
+    @staticmethod
     def _split_polygon_at_vertex(polygon: Polygon, vertex_coords, heading_rad):
         """
-        Cuts the polygon with a FULL LINE through the vertex, parallel to the
-        heading (sweep direction).
+        Cuts the polygon with a ONE-SIDED RAY from the T2 vertex inward,
+        parallel to the heading (sweep direction).
 
-        Using a full line (both directions from the vertex) rather than a
-        one-sided ray ensures the split works regardless of which side of the
-        vertex the polygon interior lies on, eliminating the need for a
-        bidirectional heading loop in the caller.
+        The ray:
+          - Originates at the concave vertex (T2).
+          - Points toward the polygon interior (direction determined
+            by which side of the heading the interior lies on).
+          - Terminates at the FIRST boundary wall it hits.
+
+        This avoids the guillotine (bidirectional) cut that would split the
+        polygon on both sides of the vertex.
         """
-        ray_len = 10000.0  # Arbitrary large length — effectively infinite
+        ray_len = 1e6  # effectively infinite
 
-        # Extend in BOTH directions from the vertex along the heading
-        p_start = (
-            vertex_coords[0] - ray_len * np.cos(heading_rad),
-            vertex_coords[1] - ray_len * np.sin(heading_rad),
-        )
-        p_end = (
-            vertex_coords[0] + ray_len * np.cos(heading_rad),
-            vertex_coords[1] + ray_len * np.sin(heading_rad),
-        )
+        vx, vy = vertex_coords[0], vertex_coords[1]
+        hx = np.cos(heading_rad)
+        hy = np.sin(heading_rad)
 
-        cut_line = LineString([p_start, p_end])
+        # 1. Find which direction of the heading points INTO the polygon interior.
+        eps = max(0.5, polygon.length * 0.002)
+        interior_sign = None
+        for sign in (+1.0, -1.0):
+            test_pt = Point(vx + sign * eps * hx, vy + sign * eps * hy)
+            if polygon.contains(test_pt):
+                interior_sign = sign
+                break
 
-        result_collection = split(polygon, cut_line)
+        if interior_sign is None:
+            # Vertex is not strictly on the boundary — degenerate, skip
+            return []
 
-        polys = [geom for geom in result_collection.geoms if isinstance(geom, Polygon)]
+        dx = interior_sign * hx
+        dy = interior_sign * hy
+
+        # 2. Cast the ray into the polygon and find the FIRST hit on the boundary.
+        far_pt = Point(vx + ray_len * dx, vy + ray_len * dy)
+        ray_line = LineString([(vx, vy), (far_pt.x, far_pt.y)])
+
+        # Intersect with the exterior ring (the wall we want to stop at).
+        # Also check interior rings (holes/obstacles) so the ray stops there too.
+        boundary_lines = [polygon.exterior] + list(polygon.interiors)
+        hit_pt = None
+        min_dist = ray_len
+        origin = Point(vx, vy)
+
+        for ring in boundary_lines:
+            inter = ray_line.intersection(ring)
+            if inter.is_empty:
+                continue
+            # Collect candidate points from the intersection geometry.
+            # Skip LineString results: these are collinear overlaps (ray runs
+            # parallel to a boundary edge) — they are NOT transverse crossings
+            # and would produce a degenerate cut that GEOS cannot split.
+            if inter.geom_type == 'Point':
+                candidates = [inter]
+            elif inter.geom_type == 'MultiPoint':
+                candidates = list(inter.geoms)
+            elif inter.geom_type in ('LineString', 'MultiLineString'):
+                continue  # collinear — skip entirely
+            else:
+                # GeometryCollection — extract only Point sub-geometries
+                candidates = [g for g in getattr(inter, 'geoms', [])
+                              if g.geom_type == 'Point']
+
+            for pt in candidates:
+                d = pt.distance(origin)
+                if d > 1e-6 and d < min_dist:
+                    min_dist = d
+                    hit_pt = pt
+
+        if hit_pt is None:
+            return []
+
+        # 3. Build the cut line and perform a topological split.
+        #
+        #    To ensure GEOS/Shapely actually splits the space (or connects a hole
+        #    to the exterior), the line MUST STRICTLY CROSS the boundaries.
+        #    Stopping exactly at `hit_pt` causes a dangle, not a split.
+        epsilon = 1e-3
+        
+        # Origin slightly outside the polygon, destination slightly inside the obstacle
+        p1 = Point(vx - epsilon * dx, vy - epsilon * dy)
+        p2 = Point(hit_pt.x + epsilon * dx, hit_pt.y + epsilon * dy)
+        
+        def _attempt_split(cut_p2: Point):
+            cut_line = LineString([p1, cut_p2])
+            try:
+                coll = split(polygon, cut_line)
+                return [g for g in coll.geoms if isinstance(g, Polygon)]
+            except Exception:
+                return []
+                
+        polys = _attempt_split(p2)
+        
+        # Check if the split failed (1 piece returned with the same topology & area).
+        # This happens ONLY if the cut line exactly overlaps a boundary edge 
+        # (collinear degenerate case, GEOS ignores it).
+        is_degenerate = False
+        if len(polys) == 1:
+            diff_holes = len(list(polys[0].interiors)) - len(list(polygon.interiors))
+            diff_area = abs(polys[0].area - polygon.area)
+            if diff_holes == 0 and diff_area < 1e-6:
+                is_degenerate = True
+
+        if is_degenerate or not polys:
+            # Collinear failure. Rotate the ray infinitesimaly to force a 
+            # transverse intersection across the obstacle wall.
+            angle_perturbation = 0.01  # ~0.6 degrees — enough for a transverse crossing
+            new_angle = heading_rad + angle_perturbation
+            new_dx = interior_sign * np.cos(new_angle)
+            new_dy = interior_sign * np.sin(new_angle)
+            
+            # The length of the original ray was dist(vx, hit_pt)
+            ray_dist = math.hypot(hit_pt.x - vx, hit_pt.y - vy)
+            perturbed_p2 = Point(
+                vx + (ray_dist + epsilon) * new_dx, 
+                vy + (ray_dist + epsilon) * new_dy
+            )
+            polys = _attempt_split(perturbed_p2)
+
         return polys
