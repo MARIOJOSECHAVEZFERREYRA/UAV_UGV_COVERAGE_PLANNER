@@ -48,14 +48,12 @@ def build_steps(polygon: Polygon, heading_deg: float) -> list:
     if coords[0] == coords[-1]:
         coords = coords[:-1]
 
-    all_t1, all_t2 = [], []
-    for i in range(len(coords)):
-        if ConcaveDecomposer._is_concave_topology_mapping(coords, i):
-            v = coords[i]
-            if ConcaveDecomposer._is_type_2(polygon, v, heading_rad):
-                all_t2.append(v)
-            else:
-                all_t1.append(v)
+    concave_idx = ConcaveDecomposer._find_concave_indices(coords)
+    type2_idx = set(ConcaveDecomposer._classify_type2_batch(
+        polygon, coords, concave_idx, heading_rad
+    ))
+    all_t1 = [coords[i] for i in concave_idx if i not in type2_idx]
+    all_t2 = [coords[i] for i in concave_idx if i in type2_idx]
 
     overview = {
         'type': 'overview',
@@ -78,19 +76,17 @@ def _collect(polygon: Polygon, heading_rad: float, steps: list, depth: int):
         coords = coords[:-1]
     n = len(coords)
 
-    concave = [coords[i] for i in range(n)
-               if ConcaveDecomposer._is_concave_topology_mapping(coords, i)]
+    concave_indices = ConcaveDecomposer._find_concave_indices(coords)
+    concave = [coords[i] for i in concave_indices]
     steps.append({'type': 'scan', 'polygon': polygon,
                   'concave': concave, 'heading_rad': heading_rad, 'depth': depth})
 
-    for i in range(n):
-        if not ConcaveDecomposer._is_concave_topology_mapping(coords, i):
-            continue
-        is_t2 = ConcaveDecomposer._is_type_2(polygon, coords[i], heading_rad)
-        if not is_t2:
-            continue
+    type2_indices = set(ConcaveDecomposer._classify_type2_batch(
+        polygon, coords, concave_indices, heading_rad
+    ))
+    for i in type2_indices:
         steps.append({'type': 'type2', 'polygon': polygon, 'vertex': coords[i],
-                      'is_t2': is_t2, 'heading_rad': heading_rad, 'depth': depth})
+                      'is_t2': True, 'heading_rad': heading_rad, 'depth': depth})
         subs = ConcaveDecomposer._split_polygon_at_vertex(
             polygon, coords[i], heading_rad)
         valid = [s for s in subs if s.area > 0.1 and s.area < 0.999 * polygon.area]
@@ -109,10 +105,11 @@ def _collect(polygon: Polygon, heading_rad: float, steps: list, depth: int):
         if hole_coords[0] == hole_coords[-1]:
             hole_coords = hole_coords[:-1]
 
-        for vertex in hole_coords:
-            is_t2 = ConcaveDecomposer._is_type_2(polygon, vertex, heading_rad)
-            if not is_t2:
-                continue
+        hole_t2_indices = ConcaveDecomposer._classify_hole_type2_batch(
+            polygon, hole_coords, heading_rad
+        )
+        for hi in hole_t2_indices:
+            vertex = hole_coords[hi]
             steps.append({'type': 'hole_t2', 'polygon': polygon, 'vertex': vertex,
                           'heading_rad': heading_rad, 'depth': depth})
             subs = ConcaveDecomposer._connect_hole_to_exterior(

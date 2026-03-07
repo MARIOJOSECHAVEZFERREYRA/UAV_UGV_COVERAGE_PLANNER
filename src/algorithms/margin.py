@@ -84,7 +84,6 @@ class MarginReducer:
         if not expanded_obs:
             return shrunken_ext
 
-        # Merge obstacles that are too close to each other
         merged_obs = MarginReducer._merge_nearby_obstacles(expanded_obs, margin_h)
 
         # Subtract all obstacles from exterior.
