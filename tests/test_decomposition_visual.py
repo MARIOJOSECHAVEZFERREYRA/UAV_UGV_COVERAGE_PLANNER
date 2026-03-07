@@ -1,49 +1,42 @@
 import sys
 import os
-import json
 import math
 import argparse
-import glob
 import numpy as np
 
-import matplotlib
-matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
 from shapely.geometry import Polygon, LineString, Point
 from shapely.geometry.polygon import orient
 
-# ── project imports ───────────────────────────────────────────────────────────
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, 'src'))
 
 from algorithms.decomposition import ConcaveDecomposer
-from algorithms.path_planner   import BoustrophedonPlanner
-from data.field_io             import FieldIO
+from algorithms.path_planner import BoustrophedonPlanner
+from visual_base import (
+    BG, PANEL_BG, CELLS, load_json, draw_poly, setup_dark_ax,
+    fix_axes_to_bounds, resolve_json_path,
+)
 
-# ── colours ──────────────────────────────────────────────────────────────────
-BG        = '#16213e'
-PANEL_BG  = '#1a1a2e'
-C_FIELD   = '#4A90D9'
-C_CONC    = '#E74C3C'
-C_T2      = '#F39C12'
-C_T1      = '#7f8c8d'
-C_SWEEP   = '#27AE60'
-C_CUT     = '#E67E22'
-C_PATH    = '#F1C40F'
-CELLS     = ['#8E44AD','#16A085','#E74C3C','#2980B9','#D35400','#1ABC9C',
-             '#F39C12','#8E44AD']
-SWATH     = 5.0
+# Colors specific to decomposition
+C_FIELD = '#4A90D9'
+C_CONC = '#E74C3C'
+C_T2 = '#F39C12'
+C_T1 = '#7f8c8d'
+C_SWEEP = '#27AE60'
+C_CUT = '#E67E22'
+C_PATH = '#F1C40F'
+SWATH = 5.0
 
-# ── step collector ────────────────────────────────────────────────────────────
+
+# -- step collector -----------------------------------------------------------
 def build_steps(polygon: Polygon, heading_deg: float) -> list:
     heading_rad = np.radians(heading_deg)
     steps = []
 
-    # Step 1: recursive decomposition (first step it inserts is 'scan')
     _collect(polygon, heading_rad, steps, depth=0)
 
-    # Step 2: insert 'overview' right after the first 'scan' step
     coords = list(polygon.exterior.coords)
     if coords[0] == coords[-1]:
         coords = coords[:-1]
@@ -63,7 +56,6 @@ def build_steps(polygon: Polygon, heading_deg: float) -> list:
         'heading_rad': heading_rad,
         'depth': 0,
     }
-    # Insert after the first 'scan' step (index 0)
     steps.insert(1, overview)
     return steps
 
@@ -95,11 +87,10 @@ def _collect(polygon: Polygon, heading_rad: float, steps: list, depth: int):
         steps.append({'type': 'cut', 'polygon': polygon, 'vertex': coords[i],
                       'heading_rad': heading_rad, 'pieces': subs, 'depth': depth})
         for sub in subs:
-            # Re-orient to CCW: shapely split() doesn't guarantee winding order
             _collect(orient(sub, sign=1.0), heading_rad, steps, depth + 1)
         return
 
-    # ── interior ring (obstacle) vertices ──
+    # interior ring (obstacle) vertices
     for interior in polygon.interiors:
         hole_coords = list(interior.coords)
         if hole_coords[0] == hole_coords[-1]:
@@ -129,44 +120,35 @@ def _collect(polygon: Polygon, heading_rad: float, steps: list, depth: int):
                   'heading_rad': heading_rad, 'depth': depth})
 
 
-# ── drawing helpers ───────────────────────────────────────────────────────────
-def draw_poly(ax, poly, fc, alpha=0.25, ec=None, lw=2):
-    x, y = poly.exterior.xy
-    ax.fill(x, y, fc=fc, alpha=alpha, ec='none')
-    ax.plot(x, y, color=ec or fc, lw=lw)
-    for interior in poly.interiors:
-        ix, iy = interior.xy
-        ax.fill(ix, iy, fc='white', alpha=1, ec='grey', lw=1)
-
-
+# -- drawing helpers -----------------------------------------------------------
 def draw_sweep_probes(ax, polygon, vertex, heading_rad):
     eps = max(0.5, polygon.length * 0.005)
     ray = max(polygon.bounds[2]-polygon.bounds[0],
               polygon.bounds[3]-polygon.bounds[1]) * 3
-    hv  = np.array([np.cos(heading_rad), np.sin(heading_rad)])
+    hv = np.array([np.cos(heading_rad), np.sin(heading_rad)])
     adv = np.array([-np.sin(heading_rad), np.cos(heading_rad)])
     curr = np.array(vertex)
 
     for sign in (+1, -1):
         pt = curr + sign * eps * adv
-        p0 = pt - ray * hv; p1 = pt + ray * hv
+        p0 = pt - ray * hv
+        p1 = pt + ray * hv
         ax.plot([p0[0], p1[0]], [p0[1], p1[1]],
                 color=C_SWEEP, lw=1, ls='--', alpha=0.35)
-        inter = LineString([(p0[0],p0[1]),(p1[0],p1[1])]).intersection(polygon)
-        if inter.is_empty: continue
-        segs = list(inter.geoms) if inter.geom_type=='MultiLineString' else [inter]
+        inter = LineString([(p0[0], p0[1]), (p1[0], p1[1])]).intersection(polygon)
+        if inter.is_empty:
+            continue
+        segs = list(inter.geoms) if inter.geom_type == 'MultiLineString' else [inter]
         for seg in segs:
             sx, sy = seg.xy
             ax.plot(sx, sy, color=C_SWEEP, lw=4, solid_capstyle='round', alpha=0.85)
-        label = f'{len(segs)} seg{"s" if len(segs)>1 else ""}'
+        label = f'{len(segs)} seg{"s" if len(segs) > 1 else ""}'
         mid = np.array([np.mean(segs[0].xy[0]), np.mean(segs[0].xy[1])])
         ax.annotate(label, mid, color=C_SWEEP, fontsize=7,
                     xytext=(4, 4), textcoords='offset points')
 
 
 def _ray_hit_point(polygon, vertex, heading_rad):
-    """Replicate the unidirectional ray logic from _split_polygon_at_vertex
-    to find the hit point on the boundary, for visualization only."""
     vx, vy = vertex[0], vertex[1]
     hx = math.cos(heading_rad)
     hy = math.sin(heading_rad)
@@ -215,12 +197,10 @@ def _ray_hit_point(polygon, vertex, heading_rad):
 
 
 def draw_cut_line(ax, vertex, heading_rad, polygon):
-    """Draw the unidirectional ray from the T2 vertex to the first boundary hit."""
     vx, vy = vertex[0], vertex[1]
     hit_pt = _ray_hit_point(polygon, vertex, heading_rad)
 
     if hit_pt is not None:
-        # Unidirectional ray: vertex → first wall hit
         ax.annotate('', xy=(hit_pt.x, hit_pt.y), xytext=(vx, vy),
                     arrowprops=dict(arrowstyle='->', color=C_CUT, lw=2,
                                    mutation_scale=16),
@@ -230,7 +210,6 @@ def draw_cut_line(ax, vertex, heading_rad, polygon):
         ax.plot(hit_pt.x, hit_pt.y, 'D', color=C_CUT, ms=8, zorder=6,
                 label='Ray hit point')
     else:
-        # Fallback: draw full line if hit not found
         ray = max(polygon.bounds[2]-polygon.bounds[0],
                   polygon.bounds[3]-polygon.bounds[1]) * 2
         h = np.array([math.cos(heading_rad), math.sin(heading_rad)])
@@ -256,17 +235,16 @@ def heading_arrow(ax, poly, heading_rad):
     cx, cy = poly.centroid.x, poly.centroid.y
     span = max(poly.bounds[2]-poly.bounds[0], poly.bounds[3]-poly.bounds[1])
     L = span * 0.08
-    hr = heading_rad
-    ax.annotate('', xy=(cx+L*math.cos(hr), cy+L*math.sin(hr)),
+    ax.annotate('', xy=(cx+L*math.cos(heading_rad), cy+L*math.sin(heading_rad)),
                 xytext=(cx, cy),
                 arrowprops=dict(arrowstyle='->', color='white', lw=1.5,
                                 mutation_scale=14))
 
 
-# ── info text ─────────────────────────────────────────────────────────────────
+# -- info text -----------------------------------------------------------------
 STEP_DESC = {
     'overview': lambda s: (
-        'OVERVIEW — All Concave Vertices',
+        'OVERVIEW -- All Concave Vertices',
         f"Type-1 (grey circles) : {len(s['all_t1'])}\n"
         f"Type-2 (orange stars) : {len(s['all_t2'])}\n\n"
         "T1 = sweep width changes,\n"
@@ -282,31 +260,31 @@ STEP_DESC = {
         f"Recursion depth : {s['depth']}\n"
         f"Polygon vertices: {len(list(s['polygon'].exterior.coords))-1}\n"
         f"Concave found   : {len(s['concave'])}\n\n"
-        "RED dots = interior angle > 180°.\n"
+        "RED dots = interior angle > 180.\n"
         "Each will be tested for Type-2\n"
         "obstruction next."
     ),
     'type2': lambda s: (
-        f"⚖️  TYPE-2 TEST — vertex ({s['vertex'][0]:.1f}, {s['vertex'][1]:.1f})",
+        f"TYPE-2 TEST -- vertex ({s['vertex'][0]:.1f}, {s['vertex'][1]:.1f})",
         f"Two probe sweep lines drawn\n"
         f"BEFORE and AFTER this vertex.\n\n"
         f"If the segment COUNT changes\n"
-        f"→ sweep topology changes here\n"
-        f"→ drone must exit field → Type 2.\n\n"
-        f"Result: {'TYPE 2 → will cut here' if s['is_t2'] else 'Type 1 → no cut needed'}"
+        f"-> sweep topology changes here\n"
+        f"-> drone must exit field -> Type 2.\n\n"
+        f"Result: {'TYPE 2 -> will cut here' if s['is_t2'] else 'Type 1 -> no cut needed'}"
     ),
     'cut': lambda s: (
         f"CUTTING POLYGON",
         f"Type-2 vertex at\n"
         f"  ({s['vertex'][0]:.1f}, {s['vertex'][1]:.1f})\n\n"
         f"Cut line parallel to heading\n"
-        f"({np.degrees(s['heading_rad']):.0f}°).\n\n"
+        f"({np.degrees(s['heading_rad']):.0f} deg).\n\n"
         f"Pieces produced: {len(s['pieces'])}\n\n"
         "Each piece will be processed\n"
         "recursively."
     ),
     'hole_t2': lambda s: (
-        f"OBSTACLE TYPE-2 — vertex ({s['vertex'][0]:.1f}, {s['vertex'][1]:.1f})",
+        f"OBSTACLE TYPE-2 -- vertex ({s['vertex'][0]:.1f}, {s['vertex'][1]:.1f})",
         f"Interior ring (obstacle) vertex\n"
         f"changes sweep-line topology.\n\n"
         f"A thin channel will connect\n"
@@ -319,16 +297,16 @@ STEP_DESC = {
         f"Obstacle vertex at\n"
         f"  ({s['vertex'][0]:.1f}, {s['vertex'][1]:.1f})\n\n"
         f"Channel erased along heading\n"
-        f"({np.degrees(s['heading_rad']):.0f}°).\n\n"
+        f"({np.degrees(s['heading_rad']):.0f} deg).\n\n"
         f"Hole absorbed into exterior.\n"
         f"Pieces: {len(s['pieces'])}\n\n"
         "Recursion continues on\n"
         "each piece."
     ),
     'final': lambda s: (
-        '✅  FINAL CELL — READY FOR SWEEP',
+        'FINAL CELL -- READY FOR SWEEP',
         f"Depth  : {s['depth']}\n"
-        f"Area   : {s['polygon'].area:.1f} m²\n\n"
+        f"Area   : {s['polygon'].area:.1f} m2\n\n"
         "No Type-2 vertices found.\n"
         "Boustrophedon path planned\n"
         "(yellow lines).\n\n"
@@ -337,29 +315,27 @@ STEP_DESC = {
 }
 
 
-# ── main visualizer ───────────────────────────────────────────────────────────
+# -- main visualizer ----------------------------------------------------------
 class Visualizer:
     def __init__(self, polygon: Polygon, name: str, heading_deg: float):
-        self.base_poly   = polygon
-        self.name        = name
+        self.base_poly = polygon
+        self.name = name
         self.heading_deg = heading_deg
-        self.steps       = build_steps(polygon, heading_deg)
-        self.idx         = 0
+        self.steps = build_steps(polygon, heading_deg)
+        self.idx = 0
 
-        # ── figure ──
         self.fig = plt.figure(figsize=(14, 8), facecolor=PANEL_BG)
-        self.fig.suptitle(f'Decomposition Visualizer  —  {name}',
+        self.fig.suptitle(f'Decomposition Visualizer  --  {name}',
                           color='white', fontsize=12, fontweight='bold')
 
-        # axes
-        self.ax      = self.fig.add_axes([0.04, 0.17, 0.64, 0.76])
+        self.ax = self.fig.add_axes([0.04, 0.17, 0.64, 0.76])
         self.ax_info = self.fig.add_axes([0.70, 0.17, 0.28, 0.76])
         for a in (self.ax, self.ax_info):
-            a.set_facecolor(BG)
-            a.tick_params(colors='#7f8c8d')
-            a.spines[:].set_color('#2d2d44')
-        self.ax_info.set_xticks([]); self.ax_info.set_yticks([])
-        self.ax_info.set_xlim(0,1);  self.ax_info.set_ylim(0,1)
+            setup_dark_ax(a)
+        self.ax_info.set_xticks([])
+        self.ax_info.set_yticks([])
+        self.ax_info.set_xlim(0, 1)
+        self.ax_info.set_ylim(0, 1)
 
         # slider
         ax_sl = self.fig.add_axes([0.04, 0.09, 0.64, 0.03])
@@ -372,77 +348,75 @@ class Visualizer:
 
         # buttons
         bspec = [
-            ('[  PREV', 0.04,  self._prev),
-            ('NEXT  ]', 0.22,  self._next),
+            ('[  PREV', 0.04, self._prev),
+            ('NEXT  ]', 0.22, self._next),
             ('JUMP END', 0.40, self._end),
-            ('RELOAD',   0.55, self._reload),
+            ('RELOAD', 0.55, self._reload),
         ]
         self.btns = []
         for label, x, cb in bspec:
             ba = self.fig.add_axes([x, 0.02, 0.14, 0.05])
-            b  = Button(ba, label, color='#2d3561', hovercolor='#4A90D9')
-            b.label.set_color('white'); b.label.set_fontweight('bold')
+            b = Button(ba, label, color='#2d3561', hovercolor='#4A90D9')
+            b.label.set_color('white')
+            b.label.set_fontweight('bold')
             b.on_clicked(cb)
             self.btns.append(b)
 
-        # keyboard
         self.fig.canvas.mpl_connect('key_press_event', self._on_key)
+        self._draw()
+        plt.show()
 
-        self._draw(); plt.show()
-
-    # ── navigation ──
     def _next(self, _=None):
-        if self.idx < len(self.steps)-1: self.idx += 1
+        if self.idx < len(self.steps) - 1:
+            self.idx += 1
         self._draw()
 
     def _prev(self, _=None):
-        if self.idx > 0: self.idx -= 1
+        if self.idx > 0:
+            self.idx -= 1
         self._draw()
 
     def _end(self, _=None):
-        self.idx = len(self.steps)-1; self._draw()
+        self.idx = len(self.steps) - 1
+        self._draw()
 
     def _reload(self, _=None):
         self.heading_deg = self.slider.val
         self.steps = build_steps(self.base_poly, self.heading_deg)
-        self.idx   = 0; self._draw()
+        self.idx = 0
+        self._draw()
 
     def _on_angle(self, val):
-        pass  # only apply on RELOAD to avoid lag
+        pass
 
     def _on_key(self, ev):
         {'n': self._next, 'p': self._prev,
-         'e': self._end,  'r': self._reload}.get(ev.key, lambda: None)()
+         'e': self._end, 'r': self._reload}.get(ev.key, lambda: None)()
 
-    # ── rendering ──
     def _draw(self):
         self.ax.cla()
         self.ax.set_aspect('equal')
         self.ax.set_facecolor(BG)
         self.ax.tick_params(colors='#7f8c8d')
-        self.ax.spines[:].set_color('#2d2d44')
+        for sp in self.ax.spines.values():
+            sp.set_color('#2d2d44')
 
-        s    = self.steps[self.idx]
+        s = self.steps[self.idx]
         stype = s['type']
 
-        # always: faint original polygon in background
+        # faint original polygon
         draw_poly(self.ax, self.base_poly, C_FIELD, alpha=0.08, lw=1)
 
-        # Cumulative: draw all 'final' cells seen so far (steps 0..idx)
-        # with distinct colors; path uses the same color as its cell.
-        final_steps = [st for st in self.steps[:self.idx + 1]
-                       if st['type'] == 'final']
+        # cumulative final cells
+        final_steps = [st for st in self.steps[:self.idx + 1] if st['type'] == 'final']
         for k, fst in enumerate(final_steps):
             c = CELLS[k % len(CELLS)]
             draw_poly(self.ax, fst['polygon'], c, alpha=0.28, lw=2)
-            draw_path(self.ax, fst['polygon'], fst['heading_rad'], color=c)
 
-        # active polygon (on top, only when not a final step — finals drawn above)
         if stype != 'final':
             draw_poly(self.ax, s['polygon'], C_FIELD, alpha=0.15, lw=2)
 
         if stype == 'overview':
-            # All Type-1 (grey) and Type-2 (orange) at once
             for v in s['all_t1']:
                 self.ax.plot(*v, 'o', color=C_T1, ms=10, zorder=6)
                 self.ax.annotate('  T1', v, color=C_T1, fontsize=8, va='center')
@@ -454,8 +428,7 @@ class Visualizer:
         elif stype == 'scan':
             for v in s['concave']:
                 self.ax.plot(*v, 'o', color=C_CONC, ms=11, zorder=6)
-                self.ax.annotate(f'  concave', v, color=C_CONC, fontsize=7,
-                                 va='center')
+                self.ax.annotate('  concave', v, color=C_CONC, fontsize=7, va='center')
 
         elif stype == 'type2':
             draw_sweep_probes(self.ax, s['polygon'], s['vertex'], s['heading_rad'])
@@ -477,7 +450,6 @@ class Visualizer:
                              fontsize=9, fontweight='bold', va='center')
 
         elif stype == 'hole_cut':
-            # Draw channel line from vertex to hit point
             draw_cut_line(self.ax, s['vertex'], s['heading_rad'], s['polygon'])
             for k, piece in enumerate(s['pieces']):
                 draw_poly(self.ax, piece, CELLS[k % len(CELLS)], alpha=0.28, lw=1.5)
@@ -485,30 +457,23 @@ class Visualizer:
         elif stype == 'final':
             c = CELLS[s['depth'] % len(CELLS)]
             draw_poly(self.ax, s['polygon'], c, alpha=0.38, lw=2)
-            draw_path(self.ax, s['polygon'], s['heading_rad'])
 
-        # heading arrow
         heading_arrow(self.ax, s['polygon'], s['heading_rad'])
-
-        # Pin axes to the base polygon bounds (+ 15% margin) so the long
-        # sweep probe lines never cause the map to zoom out.
-        minx, miny, maxx, maxy = self.base_poly.bounds
-        pw = (maxx - minx) * 0.15 or 10
-        ph = (maxy - miny) * 0.15 or 10
-        self.ax.set_xlim(minx - pw, maxx + pw)
-        self.ax.set_ylim(miny - ph, maxy + ph)
+        fix_axes_to_bounds(self.ax, self.base_poly, pad_frac=0.15)
         self.ax.set_title(
-            f"Step {self.idx+1} / {len(self.steps)}  —  "
-            f"Heading: {np.degrees(s['heading_rad']):.0f}°  |  "
+            f"Step {self.idx+1} / {len(self.steps)}  --  "
+            f"Heading: {np.degrees(s['heading_rad']):.0f} deg  |  "
             f"[N] next  [P] prev  [E] end  [R] reload",
             color='white', fontsize=9, pad=6)
 
         # info panel
-        title, body = STEP_DESC.get(stype, lambda s: ('?',''))(s)
+        title, body = STEP_DESC.get(stype, lambda s: ('?', ''))(s)
         self.ax_info.cla()
         self.ax_info.set_facecolor(BG)
-        self.ax_info.set_xticks([]); self.ax_info.set_yticks([])
-        self.ax_info.set_xlim(0,1);  self.ax_info.set_ylim(0,1)
+        self.ax_info.set_xticks([])
+        self.ax_info.set_yticks([])
+        self.ax_info.set_xlim(0, 1)
+        self.ax_info.set_ylim(0, 1)
         self.ax_info.text(0.5, 0.97, f'Step {self.idx+1}/{len(self.steps)}',
                           color='#7f8c8d', fontsize=8, ha='center', va='top')
         self.ax_info.axhline(0.94, color='#2d2d44', lw=1)
@@ -521,70 +486,19 @@ class Visualizer:
         # legend
         legend_items = [
             (C_FIELD, 'Field polygon'),
-            (C_CONC,  'Concave vertex'),
-            (C_T2,    'Type-2 (obstructive)'),
-            (C_T1,    'Type-1 (ok)'),
+            (C_CONC, 'Concave vertex'),
+            (C_T2, 'Type-2 (obstructive)'),
+            (C_T1, 'Type-1 (ok)'),
             (C_SWEEP, 'Sweep probe lines'),
-            (C_CUT,   'Cut line'),
-            (C_PATH,  'Boustrophedon path'),
+            (C_CUT, 'Cut line'),
+            (C_PATH, 'Boustrophedon path'),
         ]
         for k, (c, lbl) in enumerate(legend_items):
-            y = 0.38 - k*0.05
+            y = 0.38 - k * 0.05
             self.ax_info.plot([0.05, 0.12], [y, y], color=c, lw=2)
             self.ax_info.text(0.15, y, lbl, color='#95a5a6', fontsize=8, va='center')
 
         self.fig.canvas.draw_idle()
-
-
-# ── JSON loading ──────────────────────────────────────────────────────────────
-def load_json(path: str) -> tuple:
-    """Returns (polygon, name). Supports both FieldIO format and raw boundary list."""
-    with open(path) as f:
-        data = json.load(f)
-
-    # raw boundary key (project format)
-    if 'boundary' in data:
-        coords = [tuple(p) for p in data['boundary']]
-        name   = data.get('name', os.path.basename(path))
-        obstacles = [Polygon([tuple(p) for p in obs])
-                     for obs in data.get('obstacles', [])]
-    # AgriSwarm session export
-    elif 'polygon' in data:
-        coords = [tuple(p[:2]) for p in data['polygon']]
-        name   = os.path.basename(path)
-        obstacles = []
-    else:
-        raise ValueError(f'Unknown JSON format in {path}')
-
-    poly = orient(Polygon(coords), sign=1.0)  # ensure CCW
-
-    # punch obstacles as holes
-    if obstacles:
-        for obs in obstacles:
-            poly = poly.difference(obs)
-        poly = orient(poly, sign=1.0)  # re-orient after difference()
-
-    return poly, name
-
-
-def pick_json() -> str:
-    """List available JSONs and ask the user to pick one."""
-    data_dir = os.path.join(ROOT, 'data', 'test_fields')
-    files    = sorted(glob.glob(os.path.join(data_dir, '**', '*.json'),
-                                recursive=True))
-    if not files:
-        print(f'No JSON files found under {data_dir}')
-        sys.exit(1)
-
-    print('\nAvailable field files:')
-    for i, f in enumerate(files):
-        rel = os.path.relpath(f, ROOT)
-        print(f'  [{i+1}] {rel}')
-
-    choice = input('\nEnter number (or full path): ').strip()
-    if choice.isdigit():
-        return files[int(choice)-1]
-    return choice
 
 
 def main():
@@ -594,15 +508,12 @@ def main():
                         help='Initial sweep heading in degrees (default 0)')
     args = parser.parse_args()
 
-    json_path = args.json or pick_json()
-    if not os.path.isabs(json_path):
-        json_path = os.path.join(ROOT, json_path)
-
+    json_path = resolve_json_path(args.json)
     poly, name = load_json(json_path)
     print(f'\nLoaded: {name}')
     print(f'Vertices: {len(list(poly.exterior.coords))-1}')
-    print(f'Area    : {poly.area:.1f} m²')
-    print(f'Heading : {args.angle:.0f}°')
+    print(f'Area    : {poly.area:.1f} m2')
+    print(f'Heading : {args.angle:.0f} deg')
     steps = build_steps(poly, args.angle)
     print(f'Steps   : {len(steps)}')
 

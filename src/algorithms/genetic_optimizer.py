@@ -1,9 +1,11 @@
+import math
 import numpy as np
 import random
 from shapely.geometry import Polygon
 from typing import List, Tuple
 import warnings
 
+from shapely import affinity
 from .path_planner import BoustrophedonPlanner
 from .decomposition import ConcaveDecomposer
 
@@ -101,13 +103,18 @@ class GeneticOptimizer:
             sub_polygons = ConcaveDecomposer.decompose(polygon, angle)
             poly_key = polygon.wkt  # Serialize polygon
             self.decomposition_cache[(poly_key, angle)] = sub_polygons
-            
+
+            # Global sweep grid origin
+            rotation_origin = polygon.centroid
+            rotated_whole = affinity.rotate(polygon, -angle, origin=rotation_origin)
+            global_y_origin = rotated_whole.bounds[1]
+
             # Paths for each sub-polygon
             for sub_poly in sub_polygons:
                 sub_key = sub_poly.wkt
-                cache_key = (sub_key, angle, self.planner.spray_width)
+                cache_key = (sub_key, angle, self.planner.spray_width, global_y_origin)
                 if cache_key not in self.path_cache:
-                    path, l, s_prime, turns = self.planner.generate_path(sub_poly, angle)
+                    path, l, s_prime, turns = self.planner.generate_path(sub_poly, angle, global_y_origin=global_y_origin, rotation_origin=rotation_origin)
                     self.path_cache[cache_key] = (path, l, s_prime, turns)
             
             if (i + 1) % 10 == 0:
@@ -127,17 +134,17 @@ class GeneticOptimizer:
         # Fallback: calculate if not in cache
         return ConcaveDecomposer.decompose(polygon, angle)
 
-    def _get_path(self, sub_poly: Polygon, angle: float):
+    def _get_path(self, sub_poly: Polygon, angle: float, global_y_origin: float = None, rotation_origin=None):
         """Gets path from cache or calculates on-the-fly."""
         angle = self._discretize_angle(angle)
-        
+
         if self.enable_caching:
-            key = (sub_poly.wkt, angle, self.planner.spray_width)
+            key = (sub_poly.wkt, angle, self.planner.spray_width, global_y_origin)
             if key in self.path_cache:
                 return self.path_cache[key]
-        
+
         # Fallback
-        return self.planner.generate_path(sub_poly, angle)
+        return self.planner.generate_path(sub_poly, angle, global_y_origin=global_y_origin, rotation_origin=rotation_origin)
 
     def _evaluate_individual(self, angle: float, polygon: Polygon,
                             target_area_S: float):
@@ -147,24 +154,30 @@ class GeneticOptimizer:
         """
         # 1. Decomposition (cached)
         sub_polygons = self._get_decomposition(polygon, angle)
-        
+
+        # Global sweep grid origin
+        rotation_origin = polygon.centroid
+        rotated_whole = affinity.rotate(polygon, -angle, origin=rotation_origin)
+        global_y_origin = rotated_whole.bounds[1]
+
         # 2. Path Generation (cached)
-        total_path = []
         sub_paths = []
         total_l = 0.0
         total_s_prime = 0.0
-        
         total_turns = 0
 
         for sub_poly in sub_polygons:
-            path, l, s_prime, turns = self._get_path(sub_poly, angle)
-            total_path.extend(path)
+            path, l, s_prime, turns = self._get_path(sub_poly, angle, global_y_origin, rotation_origin)
             sub_paths.append(path)
             total_l += l
             total_s_prime += s_prime
             total_turns += turns
 
-        # 3. Coverage ratio
+        # 3. Order sub-paths with nearest-neighbor greedy and add ferry distance
+        total_path, ferry_dist = self._order_sub_paths(sub_paths)
+        total_l += ferry_dist
+
+        # 4. Coverage ratio
         coverage_ratio = total_s_prime / target_area_S if target_area_S > 0 else 0
 
         return {
@@ -277,6 +290,59 @@ class GeneticOptimizer:
 
         print(f"GA done in {gen+1} gens. Best angle: {best_solution['angle']:.1f}°, cost: {best_cost:.4f}")
         return best_solution['angle'], best_solution['path'], best_solution
+
+    @staticmethod
+    def _order_sub_paths(sub_paths: list) -> tuple:
+        """
+        Order sub-paths using nearest-neighbor greedy to minimize ferry distance.
+        Each sub-path can be traversed in either direction (reversed).
+        Returns (combined_path, total_ferry_distance).
+        """
+        paths = [p for p in sub_paths if p]
+        if not paths:
+            return [], 0.0
+        if len(paths) == 1:
+            return list(paths[0]), 0.0
+
+        def dist(a, b):
+            return math.hypot(a[0] - b[0], a[1] - b[1])
+
+        remaining = list(range(len(paths)))
+        # Start with the first path
+        current_idx = remaining.pop(0)
+        ordered = [list(paths[current_idx])]
+        total_ferry = 0.0
+
+        while remaining:
+            current_end = ordered[-1][-1]
+            best_dist = float('inf')
+            best_idx = None
+            best_reverse = False
+
+            for idx in remaining:
+                p = paths[idx]
+                d_fwd = dist(current_end, p[0])
+                d_rev = dist(current_end, p[-1])
+                if d_fwd < best_dist:
+                    best_dist = d_fwd
+                    best_idx = idx
+                    best_reverse = False
+                if d_rev < best_dist:
+                    best_dist = d_rev
+                    best_idx = idx
+                    best_reverse = True
+
+            remaining.remove(best_idx)
+            p = list(paths[best_idx])
+            if best_reverse:
+                p.reverse()
+            total_ferry += best_dist
+            ordered.append(p)
+
+        combined = ordered[0]
+        for p in ordered[1:]:
+            combined.extend(p)
+        return combined, total_ferry
 
     def _roulette_selection(self, population, fitness_values):
         """Roulette Wheel Selection (unchanged)."""

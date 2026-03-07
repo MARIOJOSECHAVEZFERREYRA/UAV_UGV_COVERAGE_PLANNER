@@ -83,6 +83,25 @@ class ConcaveDecomposer:
         return hit_pt
 
     @staticmethod
+    def _cast_ray_to_ring(ring, vx: float, vy: float,
+                           dx: float, dy: float,
+                           ray_len: float = 1e6) -> Point | None:
+        """
+        Cast a ray from (vx, vy) in direction (dx, dy) against a single
+        ring (exterior or interior) and return the nearest hit point.
+        """
+        origin = Point(vx, vy)
+        ray_line = LineString([(vx, vy), (vx + ray_len * dx, vy + ray_len * dy)])
+        candidates = ConcaveDecomposer._extract_hit_points(ray_line.intersection(ring))
+        hit_pt, min_dist = None, ray_len
+        for pt in candidates:
+            d = pt.distance(origin)
+            if d > 1e-6 and d < min_dist:
+                min_dist = d
+                hit_pt = pt
+        return hit_pt
+
+    @staticmethod
     def _validate_and_recurse(polygon: Polygon, sub_polygons: list[Polygon],
                                heading_angle_deg: float,
                                depth: int) -> tuple[list[Polygon], bool]:
@@ -314,8 +333,10 @@ class ConcaveDecomposer:
         dx = interior_sign * hx
         dy = interior_sign * hy
 
-        hit_pt = ConcaveDecomposer._cast_ray_to_boundary(
-            polygon, vx, vy, dx, dy
+        # Cast ray to EXTERIOR only — skip other holes so the channel
+        # traverses any intermediate holes and absorbs them.
+        hit_pt = ConcaveDecomposer._cast_ray_to_ring(
+            polygon.exterior, vx, vy, dx, dy
         )
         if hit_pt is None:
             return [polygon]
@@ -338,6 +359,57 @@ class ConcaveDecomposer:
     # ------------------------------------------------------------------ #
 
     @staticmethod
+    def _resolve_all_holes(polygon: Polygon, heading_rad: float,
+                            max_iter: int = 100) -> Polygon | list[Polygon]:
+        """
+        Iteratively connect all holes to the exterior boundary.
+        Returns a Polygon (no holes) or list[Polygon] if the channel split it.
+        """
+        for _ in range(max_iter):
+            if not list(polygon.interiors):
+                return polygon
+
+            found = False
+            for interior in polygon.interiors:
+                hole_coords = list(interior.coords)
+                if hole_coords[0] == hole_coords[-1]:
+                    hole_coords = hole_coords[:-1]
+
+                hole_t2 = ConcaveDecomposer._classify_hole_type2_batch(
+                    polygon, hole_coords, heading_rad
+                )
+                if not hole_t2:
+                    continue
+
+                for idx in hole_t2:
+                    subs = ConcaveDecomposer._connect_hole_to_exterior(
+                        polygon, hole_coords[idx], heading_rad
+                    )
+                    valid = [s for s in subs if s.area > 0.1]
+                    if not valid:
+                        continue
+
+                    total_holes_before = len(list(polygon.interiors))
+                    total_holes_after = sum(len(list(s.interiors)) for s in valid)
+                    if total_holes_after >= total_holes_before:
+                        continue
+
+                    if len(valid) == 1:
+                        polygon = orient(valid[0], sign=1.0)
+                        found = True
+                        break
+                    else:
+                        return valid
+
+                if found:
+                    break
+
+            if not found:
+                break
+
+        return polygon
+
+    @staticmethod
     def decompose(polygon: Polygon, heading_angle_deg: float,
                    depth: int = 0) -> list[Polygon]:
         """
@@ -354,6 +426,16 @@ class ConcaveDecomposer:
             return [polygon]
 
         heading_rad = np.radians(heading_angle_deg)
+
+        # --- Pre-step: resolve ALL holes iteratively ---
+        resolved = ConcaveDecomposer._resolve_all_holes(polygon, heading_rad)
+        if isinstance(resolved, list):
+            result = []
+            for sub in resolved:
+                sub = orient(sub, sign=1.0)
+                result.extend(ConcaveDecomposer.decompose(sub, heading_angle_deg, depth + 1))
+            return result
+        polygon = resolved
 
         # --- Exterior vertices ---
         coords = list(polygon.exterior.coords)
@@ -376,27 +458,6 @@ class ConcaveDecomposer:
             )
             if success:
                 return result
-
-        # --- Hole (obstacle) vertices ---
-        for interior in polygon.interiors:
-            hole_coords = list(interior.coords)
-            if hole_coords[0] == hole_coords[-1]:
-                hole_coords = hole_coords[:-1]
-
-            # Batch classify hole vertices with shared spatial index
-            hole_type2 = ConcaveDecomposer._classify_hole_type2_batch(
-                polygon, hole_coords, heading_rad
-            )
-
-            for idx in hole_type2:
-                sub_polygons = ConcaveDecomposer._connect_hole_to_exterior(
-                    polygon, hole_coords[idx], heading_rad
-                )
-                result, success = ConcaveDecomposer._validate_and_recurse(
-                    polygon, sub_polygons, heading_angle_deg, depth
-                )
-                if success:
-                    return result
 
         # --- No Type 2 found — polygon is ready ---
         if not polygon.is_valid:
