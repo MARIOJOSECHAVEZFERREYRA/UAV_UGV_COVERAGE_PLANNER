@@ -3,6 +3,7 @@ from shapely.geometry import Polygon, LineString, Point, box
 from shapely.ops import split, unary_union
 
 from shapely.geometry.polygon import orient
+from shapely.validation import make_valid
 import math
 
 class ConcaveDecomposer:
@@ -116,6 +117,12 @@ class ConcaveDecomposer:
                     return result
 
         # If no obstructive concavity was found, the polygon is ready
+        if not polygon.is_valid:
+            polygon = make_valid(polygon)
+            if polygon.geom_type == 'MultiPolygon':
+                return [p for p in polygon.geoms if p.area > 0.1]
+            elif polygon.geom_type != 'Polygon':
+                return []
         return [polygon]
 
     @staticmethod

@@ -141,8 +141,7 @@ class MissionController:
             
             opt_result = optimizer.optimize(
                 safe_polygon,
-                swath_width=real_swath, 
-                truck_route=truck_route_line
+                swath_width=real_swath,
             )
             
             best_angle = opt_result['angle']

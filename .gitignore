@@ -13,3 +13,5 @@ venv/
 #heavy data
 *.plan
 data/*.tiff
+#Agents
+agents/

@@ -1,29 +1,3 @@
-"""
-test_decomposition_visual.py
-============================
-Step-by-step visualizer for ConcaveDecomposer.
-
-Usage
------
-    cd agriswarm_planner
-    source /path/to/venv/bin/activate
-    python tests/test_decomposition_visual.py [json_path] [--angle DEGREES]
-
-Examples
-    python tests/test_decomposition_visual.py
-        → lists available JSONs and asks you to pick one
-
-    python tests/test_decomposition_visual.py data/test_fields/basic/u_shape.json
-    python tests/test_decomposition_visual.py data/test_fields/basic/comb_shape.json --angle 90
-
-Navigation
-----------
-    ▶ NEXT STEP  or  N key   advance one algorithm step
-    ◀ PREV STEP  or  P key   go back one step
-    ⏭ JUMP END   or  E key   jump to last step
-    ↺ RELOAD     or  R key   reload with a different angle (slider)
-"""
-
 import sys
 import os
 import json
@@ -273,7 +247,7 @@ def draw_cut_line(ax, vertex, heading_rad, polygon):
 def draw_path(ax, poly, heading_rad, color=C_PATH):
     try:
         planner = BoustrophedonPlanner(spray_width=SWATH)
-        path, _, _ = planner.generate_path(poly, np.degrees(heading_rad))
+        path, _, _, _ = planner.generate_path(poly, np.degrees(heading_rad))
         if len(path) > 1:
             xs, ys = zip(*path)
             ax.plot(xs, ys, color=color, lw=1.2, alpha=0.9)
@@ -307,7 +281,7 @@ STEP_DESC = {
         "then recurses on each piece."
     ),
     'scan': lambda s: (
-        '🔍 SCANNING FOR CONCAVE VERTICES',
+        'SCANNING FOR CONCAVE VERTICES',
         f"Recursion depth : {s['depth']}\n"
         f"Polygon vertices: {len(list(s['polygon'].exterior.coords))-1}\n"
         f"Concave found   : {len(s['concave'])}\n\n"
@@ -322,10 +296,10 @@ STEP_DESC = {
         f"If the segment COUNT changes\n"
         f"→ sweep topology changes here\n"
         f"→ drone must exit field → Type 2.\n\n"
-        f"Result: {'⚠️  TYPE 2 → will cut here' if s['is_t2'] else '✅  Type 1 → no cut needed'}"
+        f"Result: {'TYPE 2 → will cut here' if s['is_t2'] else 'Type 1 → no cut needed'}"
     ),
     'cut': lambda s: (
-        f"✂️  CUTTING POLYGON",
+        f"CUTTING POLYGON",
         f"Type-2 vertex at\n"
         f"  ({s['vertex'][0]:.1f}, {s['vertex'][1]:.1f})\n\n"
         f"Cut line parallel to heading\n"
@@ -616,7 +590,6 @@ def pick_json() -> str:
     return choice
 
 
-# ── entry point ───────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('json', nargs='?', help='Path to field JSON file')
@@ -635,7 +608,6 @@ def main():
     print(f'Heading : {args.angle:.0f}°')
     steps = build_steps(poly, args.angle)
     print(f'Steps   : {len(steps)}')
-    print('\nKeys: [N] next  [P] prev  [E] jump-end  [R] reload-angle\n')
 
     Visualizer(poly, name, args.angle)
 

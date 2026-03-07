@@ -1,13 +1,10 @@
 import numpy as np
 import random
-from shapely.geometry import Polygon, LineString, Point
-from typing import List, Tuple, Optional
-from functools import lru_cache
-from multiprocessing import Pool, cpu_count
+from shapely.geometry import Polygon
+from typing import List, Tuple
 import warnings
 
 from .path_planner import BoustrophedonPlanner
-from .cost_evaluator import RouteCostEvaluator
 from .decomposition import ConcaveDecomposer
 
 class GeneticOptimizer:
@@ -67,9 +64,7 @@ class GeneticOptimizer:
         # Paper precision
         self.precision_decimals = 3
         
-        # Number of cores for parallelization
-        # 
-        self.num_workers = max(1, cpu_count() - 1) if enable_parallelization else 1
+        self.num_workers = 1  # Sequential (parallel disabled due to pickling)
 
     def _discretize_angle(self, angle: float) -> float:
         """Rounds angle to the nearest discretized grid value."""
@@ -112,8 +107,8 @@ class GeneticOptimizer:
                 sub_key = sub_poly.wkt
                 cache_key = (sub_key, angle, self.planner.spray_width)
                 if cache_key not in self.path_cache:
-                    path, l, s_prime = self.planner.generate_path(sub_poly, angle)
-                    self.path_cache[cache_key] = (path, l, s_prime)
+                    path, l, s_prime, turns = self.planner.generate_path(sub_poly, angle)
+                    self.path_cache[cache_key] = (path, l, s_prime, turns)
             
             if (i + 1) % 10 == 0:
                 print(f"  Progress: {i+1}/{len(self.angle_grid)} angles processed")
@@ -144,8 +139,8 @@ class GeneticOptimizer:
         # Fallback
         return self.planner.generate_path(sub_poly, angle)
 
-    def _evaluate_individual(self, angle: float, polygon: Polygon, 
-                            truck_route: Optional[LineString], target_area_S: float):
+    def _evaluate_individual(self, angle: float, polygon: Polygon,
+                            target_area_S: float):
         """
         Evaluates an individual (angle) and returns its metrics.
         Pure function to allow parallelization.
@@ -159,174 +154,129 @@ class GeneticOptimizer:
         total_l = 0.0
         total_s_prime = 0.0
         
+        total_turns = 0
+
         for sub_poly in sub_polygons:
-            path, l, s_prime = self._get_path(sub_poly, angle)
+            path, l, s_prime, turns = self._get_path(sub_poly, angle)
             total_path.extend(path)
             sub_paths.append(path)
             total_l += l
             total_s_prime += s_prime
-        
-        # 3. Cooperative Costs
-        truck_perimeter_cost = RouteCostEvaluator.calculate_total_truck_cost(polygon, sub_paths)
-        
-        # 4. Logistics Costs (Anchor Route)
-        log_cost = 0.0
-        if truck_route and len(total_path) > 1:
-            p_start = Point(total_path[0])
-            p_end = Point(total_path[-1])
-            d1 = truck_route.distance(p_start)
-            d2 = truck_route.distance(p_end)
-            log_cost = d1 + d2
-        
-        # 5. Coverage Error
-        coverage_error = abs(total_s_prime - target_area_S) / target_area_S if target_area_S > 0 else 0
-        
+            total_turns += turns
+
+        # 3. Coverage ratio
+        coverage_ratio = total_s_prime / target_area_S if target_area_S > 0 else 0
+
         return {
             'angle': angle,
             'l': total_l,
             's_prime': total_s_prime,
-            'coverage_error': coverage_error,
-            'log_cost': log_cost,
-            'truck_cost': truck_perimeter_cost,
+            'n_turns': total_turns,
+            'coverage_ratio': coverage_ratio,
             'path': total_path
         }
 
-    def optimize(self, polygon: Polygon, truck_route: Optional[LineString] = None) -> Tuple[float, List[tuple], dict]:
+    def optimize(self, polygon: Polygon, w1: float = 1.0, w2: float = 1.0, w3: float = 1.0) -> Tuple[float, List[tuple], dict]:
         """
-        Executes the OPTIMIZED evolutionary cycle.
+        Executes GA with multiobjetivo fitness:
+        F = w1·l_norm + w2·n_turns_norm + w3·(1 - S'/S_total)
+
+        Lower F is better. We minimize F (or equivalently maximize 1/F).
+
+        :param w1: Weight for flight distance
+        :param w2: Weight for number of turns
+        :param w3: Weight for coverage gap
         """
-        # Pre-build caches
         if self.enable_caching:
             self._build_caches(polygon)
-        
-        # Population Initialization
+
         population = [random.uniform(0, 360) for _ in range(self.initial_pop_size)]
-        
-        best_solution = None
-        best_fitness = -1.0
-        prev_best_fitness = -1.0
-        no_improvement_count = 0
-        
         target_area_S = polygon.area
 
-        print(f"\nStarting Optimized GA ({self.generations} max generations)")
-        print(f"  - Cache: {'✓' if self.enable_caching else '✗'}")
-        print(f"  - Parallelization: {'✓ (' + str(self.num_workers) + ' workers)' if self.enable_parallelization else '✗'}")
-        print(f"  - Early Stopping: {'✓ (patience=' + str(self.early_stopping_patience) + ')' if self.enable_early_stopping else '✗'}")
-        print(f"  - Adaptive Population: ✓\n")
+        best_solution = None
+        best_cost = float('inf')
+        prev_best_cost = float('inf')
+        no_improvement_count = 0
 
         for gen in range(self.generations):
-            # Adaptive Population
             current_pop_size = self._get_adaptive_population_size(gen)
             population = population[:current_pop_size]
-            
-            # --- PARALLEL EVALUATION ---
-            if self.enable_parallelization and self.num_workers > 1:
-                # Parallelization disabled due to pickling issues with caches
-                # Use sequential evaluation optimized with caches
-                raw_metrics = [self._evaluate_individual(angle, polygon, truck_route, target_area_S) 
-                              for angle in population]
-            else:
-                # Sequential evaluation
-                raw_metrics = [self._evaluate_individual(angle, polygon, truck_route, target_area_S) 
-                              for angle in population]
-            
-            # --- VECTORIZED FITNESS CALCULATION ---
-            # Extract arrays for vectorization
-            distances_l = np.array([m['l'] for m in raw_metrics])
-            logistics_costs = np.array([m['log_cost'] for m in raw_metrics])
-            coop_costs = np.array([m['truck_cost'] for m in raw_metrics])
-            
-            # Vectorized Normalization (NumPy)
-            sqrt_sum_sq_l = np.sqrt(np.sum(distances_l ** 2)) if np.any(distances_l) else 1.0
-            sqrt_sum_log = np.sqrt(np.sum(logistics_costs ** 2)) if np.any(logistics_costs) else 1.0
-            sqrt_sum_coop = np.sqrt(np.sum(coop_costs ** 2)) if np.any(coop_costs) else 1.0
-            
-            # Vectorized Fitness
+
+            raw_metrics = [self._evaluate_individual(angle, polygon, target_area_S)
+                          for angle in population]
+
+            # Normalization factors
+            all_l = np.array([m['l'] for m in raw_metrics])
+            all_turns = np.array([m['n_turns'] for m in raw_metrics])
+            max_l = np.max(all_l) if np.any(all_l > 0) else 1.0
+            max_turns = np.max(all_turns) if np.any(all_turns > 0) else 1.0
+
+            # Compute fitness for each individual
             fitness_values = []
             metrics_list = []
-            
-            for i, m in enumerate(raw_metrics):
-                i_norm = m['l'] / sqrt_sum_sq_l
-                log_norm = (m['log_cost'] / sqrt_sum_log) if truck_route else 0.0
-                coop_norm = m['truck_cost'] / sqrt_sum_coop
-                
-                # Weights
-                w_log = 5.0 if truck_route else 0.0
-                w_coop = 2.0
-                
-                denom = i_norm + m['coverage_error'] + (w_log * log_norm) + (w_coop * coop_norm)
-                fitness = 1.0 / denom if denom > 0 else 0.0
-                
+
+            for m in raw_metrics:
+                l_norm = m['l'] / max_l
+                turns_norm = m['n_turns'] / max_turns
+                coverage_gap = max(0.0, 1.0 - m['coverage_ratio'])
+
+                cost = w1 * l_norm + w2 * turns_norm + w3 * coverage_gap
+                fitness = 1.0 / (cost + 1e-10)
+
                 fitness_values.append(fitness)
-                
+
                 metrics = {
-                    "angle": m['angle'],
-                    "fitness": fitness,
-                    "l": m['l'],
-                    "s_prime": m['s_prime'],
-                    "eta": m['coverage_error'] * 100,
-                    "path": m['path'],
-                    "truck_cost": m['truck_cost'],
-                    "anchor_cost": m['log_cost']
+                    'angle': m['angle'],
+                    'fitness': fitness,
+                    'cost': cost,
+                    'l': m['l'],
+                    's_prime': m['s_prime'],
+                    'n_turns': m['n_turns'],
+                    'coverage_pct': m['coverage_ratio'] * 100,
+                    'path': m['path'],
                 }
                 metrics_list.append(metrics)
-                
-                # Update global best
-                if fitness > best_fitness:
-                    best_fitness = fitness
+
+                if cost < best_cost:
+                    best_cost = cost
                     best_solution = metrics
 
-            # --- EARLY STOPPING ---
+            # Early stopping
             if self.enable_early_stopping and gen > 0:
-                improvement = abs(best_fitness - prev_best_fitness) / max(abs(prev_best_fitness), 1e-10)
-                
-                if improvement < 1e-5:  # Tolerance
+                improvement = abs(best_cost - prev_best_cost) / max(abs(prev_best_cost), 1e-10)
+                if improvement < 1e-6:
                     no_improvement_count += 1
                 else:
                     no_improvement_count = 0
-                
                 if no_improvement_count >= self.early_stopping_patience:
-                    print(f"\n✓ Early stopping at generation {gen+1} (no improvement in {self.early_stopping_patience} gens)")
-                    # 
+                    print(f"Early stopping at gen {gen+1}")
                     break
-            
-            prev_best_fitness = best_fitness
 
-            # --- SELECTION, CROSSOVER, AND MUTATION ---
-            new_population = []
-            
-            # Elitism
-            new_population.append(best_solution["angle"])
-            
+            prev_best_cost = best_cost
+
+            # Selection, crossover, mutation
+            new_population = [best_solution['angle']]  # Elitism
+
             while len(new_population) < current_pop_size:
                 parent1 = self._roulette_selection(population, fitness_values)
                 parent2 = self._roulette_selection(population, fitness_values)
-                
+
                 if random.random() < self.crossover_rate:
                     child1, child2 = self._crossover(parent1, parent2)
                 else:
                     child1, child2 = parent1, parent2
-                
-                child1 = self._mutate(child1)
-                child2 = self._mutate(child2)
-                
-                new_population.append(child1)
+
+                new_population.append(self._mutate(child1))
                 if len(new_population) < current_pop_size:
-                    new_population.append(child2)
-            
+                    new_population.append(self._mutate(child2))
+
             population = new_population
 
-            # Log every 25 generations (more frequent to see progress)
             if (gen + 1) % 25 == 0:
-                print(f"   Gen {gen+1}/{self.generations} | Pop: {current_pop_size} | "
-                      f"Fitness: {best_fitness:.6f} | Angle: {best_solution['angle']:.1f}°")
+                print(f"  Gen {gen+1}/{self.generations} | Cost: {best_cost:.4f} | Angle: {best_solution['angle']:.1f}° | Turns: {best_solution['n_turns']}")
 
-        print(f"\n✓ Optimization completed in {gen+1} generations")
-        print(f"  Best angle: {best_solution['angle']:.2f}°")
-        print(f"  Fitness: {best_fitness:.6f}")
-        
-        return best_solution["angle"], best_solution["path"], best_solution
+        print(f"GA done in {gen+1} gens. Best angle: {best_solution['angle']:.1f}°, cost: {best_cost:.4f}")
+        return best_solution['angle'], best_solution['path'], best_solution
 
     def _roulette_selection(self, population, fitness_values):
         """Roulette Wheel Selection (unchanged)."""

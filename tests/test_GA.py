@@ -1,8 +1,3 @@
-"""
-Integration tests for all field scenarios.
-Dynamically discovers and tests all JSON scenario files.
-Uses GeneticOptimizer (same as GUI) to expose real optimization bugs.
-"""
 import unittest
 import sys
 import os
@@ -16,6 +11,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../src'
 
 from algorithms.genetic_optimizer import GeneticOptimizer
 from algorithms.path_planner import BoustrophedonPlanner
+from field_picker import pick_json
 
 
 class TestScenarios(unittest.TestCase):
@@ -106,26 +102,26 @@ class TestScenarios(unittest.TestCase):
         
         # Extract path from best solution
         raw_path = best_solution['path']
-        coverage_error = best_solution['eta'] / 100.0  # Convert back from percentage
-        
+        coverage_pct = best_solution['coverage_pct']  # Already in percentage (0-100)
+
         # Convert path to LineString if it's a list of tuples
         if isinstance(raw_path, list):
             path = LineString(raw_path) if raw_path else LineString()
         else:
             path = raw_path
-        
+
         # Assertions
         self.assertIsNotNone(path, f"No path generated for {test_name}")
-        
+
         # Visualization (pass json_path to determine subdirectory)
         self._visualize(poly, path, json_path, test_name)
-        
+
         # Safety Check
         self._assert_safety(path, poly, test_name)
-        
-        # Coverage Check (using optimizer's coverage error)
-        actual_coverage = 1.0 - coverage_error
-        print(f"[{test_name}] Coverage: {actual_coverage*100:.1f}% (Target: {min_coverage*100}%)")
+
+        # Coverage Check (using optimizer's coverage percentage)
+        actual_coverage = coverage_pct / 100.0
+        print(f"[{test_name}] Coverage: {coverage_pct:.1f}% (Target: {min_coverage*100}%)")
         
         if actual_coverage < min_coverage:
             print(f"[{test_name}] Low Coverage warning")
@@ -227,35 +223,38 @@ class TestScenarios(unittest.TestCase):
             print(f"[{test_name}] Low Coverage warning")
 
 
-# --- Dynamic Test Generation ---
-# Generate one test method per JSON file for accurate test counting
-
-def _create_scenario_test(json_file_path):
-    """Factory function to create a test method for a specific scenario"""
-    def test_method(self):
-        self.run_scenario_from_file(json_file_path)
-    return test_method
-
-
-# Discover JSON files and generate test methods
-test_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(test_dir)
-data_dir = os.path.join(project_root, 'data', 'test_fields')
-json_pattern = os.path.join(data_dir, '**', '*.json')
-json_files = glob.glob(json_pattern, recursive=True)
-
-# Attach individual test method for each JSON scenario
-for json_file in sorted(json_files):
-    basename = os.path.basename(json_file)
-    scenario_name = basename.replace('.json', '')
-    test_method_name = f'test_scenario_{scenario_name}'
-    
-    # Create and attach the test method
-    test_method = _create_scenario_test(json_file)
-    test_method.__name__ = test_method_name
-    test_method.__doc__ = f"Test scenario from {basename}"
-    setattr(TestScenarios, test_method_name, test_method)
-
-
 if __name__ == '__main__':
-    unittest.main()
+    import argparse
+
+    # Setup paths
+    test_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(test_dir)
+
+    # Parse arguments
+    parser = argparse.ArgumentParser(description='Test Genetic Optimizer on a single field scenario')
+    parser.add_argument('json', nargs='?', help='Path to field JSON file')
+    args = parser.parse_args()
+
+    # Get JSON path: from args or from user selection
+    json_path = args.json or pick_json(project_root)
+    if not os.path.isabs(json_path):
+        json_path = os.path.join(project_root, json_path)
+
+    # Create test instance and run single scenario
+    test_instance = TestScenarios()
+    test_instance.setUp()
+
+    try:
+        print(f"\n{'='*60}")
+        print(f"Running Genetic Optimizer Test")
+        print(f"{'='*60}")
+        test_instance.run_scenario_from_file(json_path)
+        print(f"\n{'='*60}")
+        print(f"✓ Test completed successfully")
+        print(f"{'='*60}\n")
+    except Exception as e:
+        print(f"\n{'='*60}")
+        print(f"✗ Test failed with error:")
+        print(f"{e}")
+        print(f"{'='*60}\n")
+        sys.exit(1)
