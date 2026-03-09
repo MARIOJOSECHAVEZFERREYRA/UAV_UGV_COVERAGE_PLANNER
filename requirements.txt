@@ -1,3 +1,5 @@
 numpy
 shapely
 PyQt6
+scipy
+matplotlib

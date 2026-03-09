@@ -86,7 +86,7 @@ class MissionController:
             real_swath = (min_s + max_s) / 2.0
 
         # 3. Safety Margin
-        margin_h = DroneDB.calculate_safety_margin_m(specs, buffer_gps=0.5)
+        margin_h = real_swath / 2.0
         
         try:
             safe_polygon = MarginReducer.shrink(polygon, margin_h=margin_h)
@@ -129,6 +129,7 @@ class MissionController:
         # 5. Route Optimization (STRATEGY PATTERN)
         best_path = None
         best_angle = 0
+        gen_stats = []
         
         if precalculated_path:
             print("Using PRE-CALCULATED flight path (Skipping Optimization)")
@@ -146,6 +147,7 @@ class MissionController:
             
             best_angle = opt_result['angle']
             best_path = LineString(opt_result['path']) if opt_result['path'] else None
+            gen_stats = opt_result.get('gen_stats', [])
         
         if not best_path:
              raise ValueError("Could not generate flight path with current settings.")
@@ -216,5 +218,6 @@ class MissionController:
             "comparison": comparison_metrics,
             "resources": resource_data,
             "best_angle": best_angle,
-            "best_path": best_path
+            "best_path": best_path,
+            "gen_stats": gen_stats,
         }

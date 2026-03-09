@@ -1,13 +1,7 @@
-import sys
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QLabel, QComboBox, QPushButton, QTextEdit, QMessageBox, 
-                             QFrame, QSizePolicy, QFormLayout, QDoubleSpinBox, QCheckBox, 
-                             QStackedWidget, QFileDialog)
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+                             QMessageBox, QSizePolicy, QStackedWidget, QFileDialog)
 from PyQt6.QtCore import Qt
-from shapely.geometry import Polygon, Point, LineString
-from shapely.ops import substring
-import math
-import datetime
+from shapely.geometry import Polygon
 
 # Local Imports
 from data import DroneDB, SpecValue
@@ -325,31 +319,13 @@ class AgriSwarmApp(QMainWindow):
             return
 
         # Snap Logic (Visual Only)
-        try:
-             offset_poly = self.polygon.buffer(value, join_style=2)
-             target_ring = None
-             
-             if not offset_poly.is_empty:
-                 if offset_poly.geom_type == 'Polygon':
-                     target_ring = offset_poly.exterior
-                 elif offset_poly.geom_type == 'MultiPolygon':
-                     largest = max(offset_poly.geoms, key=lambda p: p.area)
-                     target_ring = largest.exterior
-            
-             if target_ring:
-                 new_points = []
-                 for p in self.original_manual_route:
-                     pt = Point(p)
-                     d = target_ring.project(pt)
-                     new_pt = target_ring.interpolate(d)
-                     new_points.append((new_pt.x, new_pt.y))
-                 
-                 self.map_widget.service_route_points = new_points
-                 self.map_widget.draw_service_route(False)
-                 self.map_widget.update()
-                 
-        except Exception as e:
-             print(f"Error interactive snap: {e}")
+        snapped = GeoUtils.snap_points_to_polygon_offset(
+            self.polygon, self.original_manual_route, value
+        )
+        if snapped:
+            self.map_widget.service_route_points = snapped
+            self.map_widget.draw_service_route(False)
+            self.map_widget.update()
 
     def load_field(self):
         filename, _ = QFileDialog.getOpenFileName(
@@ -618,19 +594,6 @@ class AgriSwarmApp(QMainWindow):
              self.statusBar().clearMessage()
         finally:
             QApplication.restoreOverrideCursor()
-
-    def show_report_panel(self, metrics, comparison, resources):
-        # Create Report Panel
-        # Clear previous report if any
-        if self.sidebar_stack.count() > 1:
-            w = self.sidebar_stack.widget(1)
-            self.sidebar_stack.removeWidget(w)
-            w.deleteLater()
-        
-        report_panel = ReportPanel(metrics, comparison, resources)
-        report_panel.back_clicked.connect(self.show_control_panel)
-        self.sidebar_stack.addWidget(report_panel)
-        self.sidebar_stack.setCurrentIndex(1)
 
     def export_mission(self):
         if not self.last_mission_cycles: return

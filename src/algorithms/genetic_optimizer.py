@@ -28,7 +28,7 @@ class GeneticOptimizer:
 
     def __init__(self, planner: BoustrophedonPlanner, 
                  pop_size=200, generations=300, 
-                 crossover_rate=0.4, mutation_rate=0.001,
+                 crossover_rate=0.4, mutation_rate=0.01,
                  angle_discretization=5.0,
                  enable_caching=True,
                  enable_parallelization=True,
@@ -74,19 +74,6 @@ class GeneticOptimizer:
             return angle
         idx = np.argmin(np.abs(self.angle_grid - (angle % 360)))
         return self.angle_grid[idx]
-
-    def _get_adaptive_population_size(self, gen: int) -> int:
-        """
-        Reduces population as the algorithm progresses.
-        
-        """
-        max_gen = self.generations
-        if gen < max_gen * 0.3:  # First 30%: Exploration
-            return self.initial_pop_size
-        elif gen < max_gen * 0.7:  # 30-70%: Convergence
-            return max(50, self.initial_pop_size // 2)
-        else:  # Last 30%: Refinement
-            return max(25, self.initial_pop_size // 4)
 
     def _build_caches(self, polygon: Polygon):
         """Pre-calculates decompositions for all grid angles."""
@@ -189,16 +176,10 @@ class GeneticOptimizer:
             'path': total_path
         }
 
-    def optimize(self, polygon: Polygon, w1: float = 1.0, w2: float = 1.0, w3: float = 1.0) -> Tuple[float, List[tuple], dict]:
+    def optimize(self, polygon: Polygon) -> Tuple[float, List[tuple], dict]:
         """
-        Executes GA with multiobjetivo fitness:
-        F = w1·l_norm + w2·n_turns_norm + w3·(1 - S'/S_total)
-
-        Lower F is better. We minimize F (or equivalently maximize 1/F).
-
-        :param w1: Weight for flight distance
-        :param w2: Weight for number of turns
-        :param w3: Weight for coverage gap
+        GA with Li et al. (2023) fitness: f = (l_norm + |S'-S|/S)^{-1}
+        Uses L2-norm for flight distance (Eq. 14) — absolute, not relative.
         """
         if self.enable_caching:
             self._build_caches(polygon)
@@ -207,56 +188,53 @@ class GeneticOptimizer:
         target_area_S = polygon.area
 
         best_solution = None
-        best_cost = float('inf')
-        prev_best_cost = float('inf')
+        best_fitness = -1.0
+        prev_best_fitness = -1.0
         no_improvement_count = 0
+        gen_stats = []
 
         for gen in range(self.generations):
-            current_pop_size = self._get_adaptive_population_size(gen)
-            population = population[:current_pop_size]
-
             raw_metrics = [self._evaluate_individual(angle, polygon, target_area_S)
                           for angle in population]
 
-            # Normalization factors
+            # L2-norm for flight distance (Eq. 14)
             all_l = np.array([m['l'] for m in raw_metrics])
-            all_turns = np.array([m['n_turns'] for m in raw_metrics])
-            max_l = np.max(all_l) if np.any(all_l > 0) else 1.0
-            max_turns = np.max(all_turns) if np.any(all_turns > 0) else 1.0
+            l2_norm = np.sqrt(np.sum(all_l**2))
+            if l2_norm < 1e-12:
+                l2_norm = 1.0
+            l_norms = all_l / l2_norm
 
-            # Compute fitness for each individual
+            # Fitness (Eq. 15): f = (l_norm + |S'-S|/S)^{-1}
             fitness_values = []
-            metrics_list = []
-
-            for m in raw_metrics:
-                l_norm = m['l'] / max_l
-                turns_norm = m['n_turns'] / max_turns
-                coverage_gap = max(0.0, 1.0 - m['coverage_ratio'])
-
-                cost = w1 * l_norm + w2 * turns_norm + w3 * coverage_gap
-                fitness = 1.0 / (cost + 1e-10)
-
+            for i, m in enumerate(raw_metrics):
+                extra_coverage = abs(m['s_prime'] - target_area_S) / target_area_S if target_area_S > 0 else 0
+                denom = l_norms[i] + extra_coverage
+                fitness = 1.0 / denom if denom > 1e-12 else 1e10
                 fitness_values.append(fitness)
 
-                metrics = {
-                    'angle': m['angle'],
-                    'fitness': fitness,
-                    'cost': cost,
-                    'l': m['l'],
-                    's_prime': m['s_prime'],
-                    'n_turns': m['n_turns'],
-                    'coverage_pct': m['coverage_ratio'] * 100,
-                    'path': m['path'],
-                }
-                metrics_list.append(metrics)
+                if fitness > best_fitness:
+                    best_fitness = fitness
+                    best_solution = {
+                        'angle': m['angle'],
+                        'fitness': fitness,
+                        'l': m['l'],
+                        's_prime': m['s_prime'],
+                        'n_turns': m['n_turns'],
+                        'coverage_pct': m['coverage_ratio'] * 100,
+                        'extra_coverage_pct': extra_coverage * 100,
+                        'path': m['path'],
+                    }
 
-                if cost < best_cost:
-                    best_cost = cost
-                    best_solution = metrics
+            gen_stats.append({
+                'gen': gen + 1,
+                'mean_fitness': float(np.mean(fitness_values)),
+                'mean_angle': float(np.mean(population)),
+                'mean_l': float(np.mean(all_l)),
+            })
 
             # Early stopping
             if self.enable_early_stopping and gen > 0:
-                improvement = abs(best_cost - prev_best_cost) / max(abs(prev_best_cost), 1e-10)
+                improvement = abs(best_fitness - prev_best_fitness) / max(abs(prev_best_fitness), 1e-10)
                 if improvement < 1e-6:
                     no_improvement_count += 1
                 else:
@@ -265,14 +243,14 @@ class GeneticOptimizer:
                     print(f"Early stopping at gen {gen+1}")
                     break
 
-            prev_best_cost = best_cost
+            prev_best_fitness = best_fitness
 
-            # Selection, crossover, mutation
+            # Selection (tournament k=3), crossover, mutation
             new_population = [best_solution['angle']]  # Elitism
 
-            while len(new_population) < current_pop_size:
-                parent1 = self._roulette_selection(population, fitness_values)
-                parent2 = self._roulette_selection(population, fitness_values)
+            while len(new_population) < self.initial_pop_size:
+                parent1 = self._tournament_selection(population, fitness_values)
+                parent2 = self._tournament_selection(population, fitness_values)
 
                 if random.random() < self.crossover_rate:
                     child1, child2 = self._crossover(parent1, parent2)
@@ -280,15 +258,16 @@ class GeneticOptimizer:
                     child1, child2 = parent1, parent2
 
                 new_population.append(self._mutate(child1))
-                if len(new_population) < current_pop_size:
+                if len(new_population) < self.initial_pop_size:
                     new_population.append(self._mutate(child2))
 
             population = new_population
 
             if (gen + 1) % 25 == 0:
-                print(f"  Gen {gen+1}/{self.generations} | Cost: {best_cost:.4f} | Angle: {best_solution['angle']:.1f}° | Turns: {best_solution['n_turns']}")
+                print(f"  Gen {gen+1}/{self.generations} | Best fitness: {best_fitness:.4f} | Angle: {best_solution['angle']:.1f}°")
 
-        print(f"GA done in {gen+1} gens. Best angle: {best_solution['angle']:.1f}°, cost: {best_cost:.4f}")
+        print(f"GA done in {gen+1} gens. Best angle: {best_solution['angle']:.1f}°, fitness: {best_fitness:.4f}")
+        best_solution['gen_stats'] = gen_stats
         return best_solution['angle'], best_solution['path'], best_solution
 
     @staticmethod
@@ -344,19 +323,12 @@ class GeneticOptimizer:
             combined.extend(p)
         return combined, total_ferry
 
-    def _roulette_selection(self, population, fitness_values):
-        """Roulette Wheel Selection (unchanged)."""
-        total_fitness = sum(fitness_values)
-        if total_fitness == 0:
-            return random.choice(population)
-        
-        pick = random.uniform(0, total_fitness)
-        current = 0
-        for i, angle in enumerate(population):
-            current += fitness_values[i]
-            if current > pick:
-                return angle
-        return population[-1]
+    @staticmethod
+    def _tournament_selection(population, fitness_values, k=3):
+        """Tournament selection: pick k random individuals, return the best."""
+        indices = random.sample(range(len(population)), k)
+        best = max(indices, key=lambda i: fitness_values[i])
+        return population[best]
 
     def _crossover(self, p1, p2):
         """

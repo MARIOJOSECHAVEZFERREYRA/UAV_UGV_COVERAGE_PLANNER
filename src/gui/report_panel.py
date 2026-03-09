@@ -172,44 +172,6 @@ class ReportPanel(QWidget):
         
         main_layout.addWidget(footer_container)
 
-    def create_metric_card(self, parent_layout, title, value, positive=True):
-        card = QFrame()
-        card.setStyleSheet(f"""
-            QFrame {{
-                background-color: #34495e;
-                border-radius: 6px;
-                border: 1px solid #7f8c8d;
-            }}
-        """)
-        clayout = QVBoxLayout(card)
-        clayout.setSpacing(2)
-        
-        l_t = QLabel(title)
-        l_t.setStyleSheet("color: #bdc3c7; font-size: 10px; font-weight: bold;")
-        
-        l_v = QLabel(value)
-        color = ACCENT_GREEN if positive else (ACCENT_ORANGE if positive is None else "#c0392b")
-        if positive is None: color = "white"
-        
-        l_v.setStyleSheet(f"color: {color}; font-size: 20px; font-weight: 900;")
-        
-        clayout.addWidget(l_t)
-        clayout.addWidget(l_v)
-        parent_layout.addWidget(card)
-
-    def create_mini_info(self, parent_layout, label, value, color):
-        w = QWidget()
-        hl = QHBoxLayout(w)
-        hl.setContentsMargins(0,0,0,0)
-        l1 = QLabel(label)
-        l1.setStyleSheet("color: white; font-weight: bold;")
-        l2 = QLabel(value)
-        l2.setStyleSheet(f"color: {color}; font-weight: 900; font-size: 16px;")
-        hl.addWidget(l1)
-        hl.addStretch()
-        hl.addWidget(l2)
-        parent_layout.addWidget(w)
-
     def create_mini_element(self, layout, title, value, color):
         v = QVBoxLayout()
         v.setSpacing(2)

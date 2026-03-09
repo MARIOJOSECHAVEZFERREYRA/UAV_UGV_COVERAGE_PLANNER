@@ -38,7 +38,8 @@ class GeneticStrategy(MissionPlannerStrategy):
         return {
             'path': best_path,
             'angle': best_angle,
-            'metrics': metrics
+            'metrics': metrics,
+            'gen_stats': metrics.get('gen_stats', []),
         }
 
 class SimpleGridStrategy(MissionPlannerStrategy):

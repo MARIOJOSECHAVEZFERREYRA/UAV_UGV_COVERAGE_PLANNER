@@ -147,11 +147,6 @@ class MapWidget(QGraphicsView):
         self.last_safe_geom = None
         self.last_mission_cycles = None
 
-    def set_swath_visibility(self, visible: bool):
-        self.show_swath = visible
-        if self.last_mission_cycles:
-             self.draw_results(self.last_polygon_geom, self.last_safe_geom, self.last_mission_cycles)
-    
     def drawBackground(self, painter, rect):
         """Dynamic Grid"""
         super().drawBackground(painter, rect)

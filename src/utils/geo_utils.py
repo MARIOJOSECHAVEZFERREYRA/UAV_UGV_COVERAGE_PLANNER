@@ -1,5 +1,7 @@
 import math
 import json
+from shapely.geometry import Point
+
 
 class GeoUtils:
     """
@@ -71,6 +73,35 @@ class GeoUtils:
             json.dump(plan, f, indent=4)
         
         print(f"Mission exported (Ref: Santa Cruz): {filename}")
+
+    @staticmethod
+    def snap_points_to_polygon_offset(polygon, points, offset):
+        """
+        Snap a list of (x, y) points onto the exterior ring of a buffered polygon.
+
+        :param polygon: Shapely Polygon (field boundary).
+        :param points: List of (x, y) tuples to snap.
+        :param offset: Buffer distance from the polygon boundary.
+        :return: List of snapped (x, y) tuples, or None on failure.
+        """
+        try:
+            offset_poly = polygon.buffer(offset, join_style=2)
+            if offset_poly.is_empty:
+                return None
+
+            if offset_poly.geom_type == 'MultiPolygon':
+                offset_poly = max(offset_poly.geoms, key=lambda p: p.area)
+
+            target_ring = offset_poly.exterior
+            snapped = []
+            for p in points:
+                pt = Point(p)
+                d = target_ring.project(pt)
+                new_pt = target_ring.interpolate(d)
+                snapped.append((new_pt.x, new_pt.y))
+            return snapped
+        except Exception:
+            return None
 
     @staticmethod
     def _create_mission_item(seq, lat, lon, alt, type_cmd):
