@@ -60,7 +60,31 @@ def visualize(original_polygon, safe_polygon, path_coords, metrics,
     draw_poly(ax_map, safe_polygon, fc='#2ecc71', alpha=0.15, ec='#2ecc71')
     ax_map.plot([], [], color='#2ecc71', lw=2, label='Work area')
 
-    if path_coords:
+    sweep_segments = metrics.get('sweep_segments', [])
+    ferry_segments = metrics.get('ferry_segments', [])
+
+    if sweep_segments or ferry_segments:
+        # Draw sweep lines in blue
+        for i, seg in enumerate(sweep_segments):
+            if len(seg) >= 2:
+                sx = [p[0] for p in seg]
+                sy = [p[1] for p in seg]
+                ax_map.plot(sx, sy, color='#3498db', lw=1.2, alpha=0.85,
+                            label='Sweep' if i == 0 else None)
+        # Draw ferry connections in dashed orange
+        for i, seg in enumerate(ferry_segments):
+            if len(seg) >= 2:
+                fx = [p[0] for p in seg]
+                fy = [p[1] for p in seg]
+                ax_map.plot(fx, fy, color='#e67e22', lw=1.0, alpha=0.7,
+                            ls='--', label='Ferry' if i == 0 else None)
+        # Start/end markers
+        if path_coords:
+            ax_map.plot(path_coords[0][0], path_coords[0][1], 'o', color='#2ecc71',
+                        ms=8, zorder=10, label='Start')
+            ax_map.plot(path_coords[-1][0], path_coords[-1][1], 's', color='#e74c3c',
+                        ms=8, zorder=10, label='End')
+    elif path_coords:
         path_line = LineString(path_coords)
         px, py = path_line.xy
         ax_map.plot(px, py, color='#3498db', lw=1.2, alpha=0.85, label='Flight path')

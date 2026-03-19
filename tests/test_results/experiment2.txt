@@ -1,0 +1,34 @@
+Experimento: brute force 180 como modelo reducido
+===== ORÁCULO EXHAUSTIVO =====
+Mejor ángulo exacto: 168° | distancia=37953.290 | coverage_error=0.0007% | global_fitness=14.289984
+
+===== RESUMEN =====
+Corridas: 20
+Tasa de acierto exacto del óptimo global: 70.0%
+Ranking medio del ángulo hallado por GA: 1.55
+Gap medio de distancia vs óptimo: 0.079%
+Ángulos caros únicos evaluados (media): 169.4
+Llamadas caras reales a _evaluate_angle (media): 169.4
+Diversidad media de población: 10.9
+
+===== DETALLE POR SEED =====
+seed= 0 | GA=168° | oracle=168° | hit=1 | rank=  1 | dist_gap=  0.000% | unique=172 | div_final= 12
+seed= 1 | GA=168° | oracle=168° | hit=1 | rank=  1 | dist_gap=  0.000% | unique=170 | div_final=  9
+seed= 2 | GA=168° | oracle=168° | hit=1 | rank=  1 | dist_gap=  0.000% | unique=173 | div_final= 12
+seed= 3 | GA= 96° | oracle=168° | hit=0 | rank=  3 | dist_gap=  0.273% | unique=160 | div_final= 11
+seed= 4 | GA=136° | oracle=168° | hit=0 | rank=  4 | dist_gap=  0.369% | unique=167 | div_final=  9
+seed= 5 | GA= 96° | oracle=168° | hit=0 | rank=  3 | dist_gap=  0.273% | unique=161 | div_final= 12
+seed= 6 | GA=168° | oracle=168° | hit=1 | rank=  1 | dist_gap=  0.000% | unique=163 | div_final= 10
+seed= 7 | GA=168° | oracle=168° | hit=1 | rank=  1 | dist_gap=  0.000% | unique=175 | div_final= 11
+seed= 8 | GA=168° | oracle=168° | hit=1 | rank=  1 | dist_gap=  0.000% | unique=173 | div_final=  4
+seed= 9 | GA=169° | oracle=168° | hit=0 | rank=  2 | dist_gap=  0.195% | unique=176 | div_final= 12
+seed=10 | GA=168° | oracle=168° | hit=1 | rank=  1 | dist_gap=  0.000% | unique=172 | div_final= 11
+seed=11 | GA=169° | oracle=168° | hit=0 | rank=  2 | dist_gap=  0.195% | unique=174 | div_final=  8
+seed=12 | GA=168° | oracle=168° | hit=1 | rank=  1 | dist_gap=  0.000% | unique=171 | div_final= 10
+seed=13 | GA=168° | oracle=168° | hit=1 | rank=  1 | dist_gap=  0.000% | unique=172 | div_final=  8
+seed=14 | GA=168° | oracle=168° | hit=1 | rank=  1 | dist_gap=  0.000% | unique=170 | div_final=  9
+seed=15 | GA= 96° | oracle=168° | hit=0 | rank=  3 | dist_gap=  0.273% | unique=166 | div_final=  7
+seed=16 | GA=168° | oracle=168° | hit=1 | rank=  1 | dist_gap=  0.000% | unique=166 | div_final=  6
+seed=17 | GA=168° | oracle=168° | hit=1 | rank=  1 | dist_gap=  0.000% | unique=165 | div_final= 11
+seed=18 | GA=168° | oracle=168° | hit=1 | rank=  1 | dist_gap=  0.000% | unique=170 | div_final= 13
+seed=19 | GA=168° | oracle=168° | hit=1 | rank=  1 | dist_gap=  0.000% | unique=172 | div_final= 10
