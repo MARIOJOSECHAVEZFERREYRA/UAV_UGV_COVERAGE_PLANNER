@@ -49,6 +49,51 @@ export function lngLatToXy(lng, lat) {
   ]
 }
 
+/**
+ * Returns true if the segment (a→b) properly crosses segment (c→d).
+ * "Properly" means they cross in their interiors — shared endpoints don't count.
+ */
+function segmentsCross(a, b, c, d) {
+  const cross = (o, p, q) => (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0])
+  const d1 = cross(c, d, a), d2 = cross(c, d, b)
+  const d3 = cross(a, b, c), d4 = cross(a, b, d)
+  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+         ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
+}
+
+/**
+ * Returns true if adding newPt to the polygon pts would create a self-intersection.
+ *
+ * Two checks:
+ *  1. Forward edge  pts[n-1] → newPt  vs all non-adjacent existing edges
+ *     (excludes pts[n-2]→pts[n-1] which shares vertex pts[n-1])
+ *  2. Closing edge  newPt → pts[0]    vs all non-adjacent existing edges
+ *     (excludes pts[0]→pts[1] adjacent to pts[0],
+ *      and pts[n-2]→pts[n-1] adjacent to pts[n-1] which is adjacent to newPt via fwd edge)
+ *     Only relevant when n ≥ 3 (triangles can never self-intersect on close).
+ */
+export function wouldSelfIntersect(pts, newPt) {
+  const n = pts.length
+  if (n < 2) return false
+
+  // 1. Forward edge: pts[n-1] → newPt
+  //    Check against existing edges except the adjacent one (pts[n-2]→pts[n-1])
+  for (let i = 0; i < n - 1; i++) {
+    if (segmentsCross(pts[n - 1], newPt, pts[i], pts[i + 1])) return true
+  }
+
+  // 2. Closing edge: newPt → pts[0]
+  //    Check against existing edges that are non-adjacent to both endpoints:
+  //    skip pts[0]→pts[1] (adjacent at pts[0]) and pts[n-2]→pts[n-1] (adjacent at pts[n-1])
+  if (n >= 3) {
+    for (let i = 1; i < n - 1; i++) {
+      if (segmentsCross(newPt, pts[0], pts[i], pts[i + 1])) return true
+    }
+  }
+
+  return false
+}
+
 /** Compute the bounding box [[minLng, minLat], [maxLng, maxLat]] of a field. */
 export function fieldBounds(field) {
   const lnglats = field.coordinates.map(([x, y]) => xyToLngLat(x, y))

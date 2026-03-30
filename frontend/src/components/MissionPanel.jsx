@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 import { ensureClosed } from '../utils/geo'
 import { MODE } from '../utils/modes'
 
-// ── Design tokens ─────────────────────────────────────────────────────────────
 const C = {
   bg:       '#0d1117',
   surface:  '#161b22',
@@ -24,7 +23,6 @@ const STATUS_COLOR = {
   failed:    C.error,
 }
 
-// ── Base styles ───────────────────────────────────────────────────────────────
 const s = {
   panel: {
     display: 'flex', flexDirection: 'column', gap: 0,
@@ -75,7 +73,6 @@ const s = {
   },
 }
 
-// ── Button component ──────────────────────────────────────────────────────────
 function Btn({ children, onClick, variant = 'default', active = false, disabled = false, fullWidth = true }) {
   const variants = {
     default:  { bg: C.surface,   border: C.border,    color: C.text },
@@ -105,12 +102,203 @@ function Btn({ children, onClick, variant = 'default', active = false, disabled 
   )
 }
 
-// ── Divider ───────────────────────────────────────────────────────────────────
 function Divider() {
   return <div style={{ height: 1, background: C.border }} />
 }
 
-// ── Panel component ───────────────────────────────────────────────────────────
+function Spinner() {
+  return (
+    <span style={{
+      display: 'inline-block', width: 11, height: 11,
+      border: '2px solid #ffffff40', borderTopColor: '#ffffff',
+      borderRadius: '50%', animation: 'spin 0.7s linear infinite',
+    }} />
+  )
+}
+
+function HeaderSection() {
+  return (
+    <div style={s.header}>
+      <div style={s.logo}>
+        <span style={s.logoText}>UAV-UAG Planner</span>
+      </div>
+      <div style={s.subtitle}>UAV-UAG Mission Planning Tool</div>
+    </div>
+  )
+}
+
+function AircraftSection({ drones, drone, onDroneChange }) {
+  return (
+    <div style={s.section}>
+      <div style={s.sectionLabel}>Aircraft</div>
+      <div>
+        <div style={s.label}>Drone model</div>
+        <select style={s.select} value={drone} onChange={e => onDroneChange(e.target.value)}>
+          {drones.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
+        </select>
+      </div>
+    </div>
+  )
+}
+
+function FieldSection({
+  mode, activeField, drawingPtsCount,
+  onToggleDrawPolygon, onToggleDrawObstacle,
+  onLoadField, onClear,
+}) {
+  const fileRef = useRef(null)
+  const isDrawingPolygon  = mode === MODE.DRAW_POLYGON
+  const isDrawingObstacle = mode === MODE.DRAW_OBSTACLE
+  const hasField          = !!activeField
+
+  function handleLoadJSON(e) {
+    const file = e.target.files[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      try { onLoadField(JSON.parse(ev.target.result)) }
+      catch { alert('Invalid JSON file') }
+    }
+    reader.readAsText(file)
+    e.target.value = ''
+  }
+
+  return (
+    <div style={s.section}>
+      <div style={s.sectionLabel}>Field</div>
+
+      <div style={s.btnRow}>
+        <Btn
+          variant={isDrawingPolygon ? 'active' : 'success'}
+          active={isDrawingPolygon}
+          onClick={onToggleDrawPolygon}
+        >
+          {isDrawingPolygon
+            ? `Finish (${drawingPtsCount} pts)`
+            : 'Draw Field'}
+        </Btn>
+        <Btn
+          variant={isDrawingObstacle ? 'warning' : 'default'}
+          active={isDrawingObstacle}
+          disabled={!hasField && !isDrawingObstacle}
+          onClick={onToggleDrawObstacle}
+        >
+          {isDrawingObstacle ? 'Finish Obstacle' : 'Add Obstacle'}
+        </Btn>
+      </div>
+
+      <div style={s.btnRow}>
+        <Btn variant='default' onClick={() => fileRef.current.click()}>
+          Load JSON
+        </Btn>
+        <Btn variant='danger' disabled={!hasField && mode === MODE.NONE} onClick={onClear}>
+          Clear All
+        </Btn>
+      </div>
+
+      <input ref={fileRef} type="file" accept=".json" style={{ display: 'none' }} onChange={handleLoadJSON} />
+
+      {activeField?.obstacles?.length > 0 && (
+        <div style={{ fontSize: 11, color: C.muted, display: 'flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ color: '#e36d2e' }}>+</span>
+          {activeField.obstacles.length} obstacle{activeField.obstacles.length > 1 ? 's' : ''} defined
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ParametersSection({ missionName, setName, sprayWidth, setSprayWidth, swathRange, strategy, setStrategy }) {
+  return (
+    <div style={s.section}>
+      <div style={s.sectionLabel}>Mission Parameters</div>
+
+      <div>
+        <div style={s.label}>Mission name</div>
+        <input style={s.input} value={missionName} onChange={e => setName(e.target.value)} />
+      </div>
+
+      <div>
+        <div style={{ ...s.label, display: 'flex', justifyContent: 'space-between' }}>
+          <span>Spray width (m)</span>
+          <span style={{ color: C.muted }}>
+            {swathRange.min} – {swathRange.max} m
+          </span>
+        </div>
+        <input
+          style={s.input} type="number"
+          min={swathRange.min} max={swathRange.max} step={0.5}
+          value={sprayWidth} onChange={e => setSprayWidth(e.target.value)}
+        />
+      </div>
+
+      <div>
+        <div style={s.label}>Planning strategy</div>
+        <select style={s.select} value={strategy} onChange={e => setStrategy(e.target.value)}>
+          <option value="genetic">Genetic Algorithm (GA)</option>
+          <option value="simple">Simple Grid</option>
+        </select>
+      </div>
+    </div>
+  )
+}
+
+function ResultsSection({ mission, onExport }) {
+  return (
+    <div style={s.section}>
+      <div style={s.sectionLabel}>Results</div>
+
+      <div style={s.stat}>
+        <span style={s.statKey}>Status</span>
+        <span style={{
+          ...s.badge,
+          background: STATUS_COLOR[mission.status] + '20',
+          color: STATUS_COLOR[mission.status],
+          border: `1px solid ${STATUS_COLOR[mission.status]}40`,
+        }}>
+          {mission.status}
+        </span>
+      </div>
+
+      {mission.status === 'completed' && <>
+        <Divider />
+        <div style={s.stat}>
+          <span style={s.statKey}>Optimal angle</span>
+          <span style={s.statVal}>{mission.best_angle?.toFixed(1)}°</span>
+        </div>
+        <div style={s.stat}>
+          <span style={s.statKey}>Total distance</span>
+          <span style={s.statVal}>{(mission.total_distance / 1000).toFixed(2)} km</span>
+        </div>
+        {mission.coverage_area && (
+          <div style={s.stat}>
+            <span style={s.statKey}>Coverage area</span>
+            <span style={s.statVal}>{(mission.coverage_area / 10000).toFixed(2)} ha</span>
+          </div>
+        )}
+        {mission.n_cycles != null && (
+          <div style={s.stat}>
+            <span style={s.statKey}>Flight cycles</span>
+            <span style={s.statVal}>{mission.n_cycles}</span>
+          </div>
+        )}
+        <div style={s.stat}>
+          <span style={s.statKey}>Waypoints</span>
+          <span style={s.statVal}>{mission.waypoints?.length}</span>
+        </div>
+        <Divider />
+        <Btn variant='default' onClick={onExport}>
+          Export Waypoints (JSON)
+        </Btn>
+      </>}
+
+      {mission.status === 'failed' && (
+        <div style={s.errorBox}>{mission.error_message}</div>
+      )}
+    </div>
+  )
+}
+
 export default function MissionPanel({
   mode, activeField, drawingPtsCount,
   onToggleDrawPolygon, onToggleDrawObstacle,
@@ -125,8 +313,7 @@ export default function MissionPanel({
   const [mission, setMission]       = useState(null)
   const [loading, setLoading]       = useState(false)
   const [error, setError]           = useState(null)
-  const fileRef  = useRef(null)
-  const pollRef  = useRef(null)
+  const pollRef = useRef(null)
 
   useEffect(() => () => clearInterval(pollRef.current), [])
 
@@ -148,18 +335,6 @@ export default function MissionPanel({
       setSwathRange({ min: d.min_swath, max: d.max_swath })
       setSprayWidth(d.default_swath)
     }
-  }
-
-  function handleLoadJSON(e) {
-    const file = e.target.files[0]
-    if (!file) return
-    const reader = new FileReader()
-    reader.onload = (ev) => {
-      try { onLoadField(JSON.parse(ev.target.result)) }
-      catch { alert('Invalid JSON file') }
-    }
-    reader.readAsText(file)
-    e.target.value = ''
   }
 
   async function handleCompute() {
@@ -223,116 +398,45 @@ export default function MissionPanel({
     a.click(); URL.revokeObjectURL(url)
   }
 
-  const isDrawingPolygon  = mode === MODE.DRAW_POLYGON
-  const isDrawingObstacle = mode === MODE.DRAW_OBSTACLE
-  const hasField          = !!activeField
-  const canCompute        = hasField && !loading && mode === MODE.NONE
+  const hasField   = !!activeField
+  const canCompute = hasField && !loading && mode === MODE.NONE
 
   return (
     <div style={s.panel}>
+      <HeaderSection />
 
-      {/* ── Header ── */}
-      <div style={s.header}>
-        <div style={s.logo}>
-          <span style={s.logoIcon}>⬡</span>
-          <span style={s.logoText}>AgriSwarm Planner</span>
-        </div>
-        <div style={s.subtitle}>UAV Mission Planning Tool</div>
-      </div>
+      <AircraftSection
+        drones={drones}
+        drone={drone}
+        onDroneChange={handleDroneChange}
+      />
 
-      {/* ── Aircraft ── */}
-      <div style={s.section}>
-        <div style={s.sectionLabel}>Aircraft</div>
-        <div>
-          <div style={s.label}>Drone model</div>
-          <select style={s.select} value={drone} onChange={e => handleDroneChange(e.target.value)}>
-            {drones.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
-          </select>
-        </div>
-      </div>
+      <FieldSection
+        mode={mode}
+        activeField={activeField}
+        drawingPtsCount={drawingPtsCount}
+        onToggleDrawPolygon={onToggleDrawPolygon}
+        onToggleDrawObstacle={onToggleDrawObstacle}
+        onLoadField={onLoadField}
+        onClear={onClear}
+      />
 
-      {/* ── Field ── */}
-      <div style={s.section}>
-        <div style={s.sectionLabel}>Field</div>
+      <ParametersSection
+        missionName={missionName}
+        setName={setName}
+        sprayWidth={sprayWidth}
+        setSprayWidth={setSprayWidth}
+        swathRange={swathRange}
+        strategy={strategy}
+        setStrategy={setStrategy}
+      />
 
-        <div style={s.btnRow}>
-          <Btn
-            variant={isDrawingPolygon ? 'active' : 'success'}
-            active={isDrawingPolygon}
-            onClick={onToggleDrawPolygon}
-          >
-            {isDrawingPolygon
-              ? `Finish (${drawingPtsCount} pts)`
-              : '✏ Draw Field'}
-          </Btn>
-          <Btn
-            variant={isDrawingObstacle ? 'warning' : 'default'}
-            active={isDrawingObstacle}
-            disabled={!hasField && !isDrawingObstacle}
-            onClick={onToggleDrawObstacle}
-          >
-            {isDrawingObstacle ? 'Finish Obstacle' : '⬡ Add Obstacle'}
-          </Btn>
-        </div>
-
-        <div style={s.btnRow}>
-          <Btn variant='default' onClick={() => fileRef.current.click()}>
-            📂 Load JSON
-          </Btn>
-          <Btn variant='danger' disabled={!hasField && mode === 'none'} onClick={onClear}>
-            Clear All
-          </Btn>
-        </div>
-
-        <input ref={fileRef} type="file" accept=".json" style={{ display: 'none' }} onChange={handleLoadJSON} />
-
-        {(activeField?.obstacles?.length > 0) && (
-          <div style={{ fontSize: 11, color: C.muted, display: 'flex', alignItems: 'center', gap: 5 }}>
-            <span style={{ color: '#e36d2e' }}>◈</span>
-            {activeField.obstacles.length} obstacle{activeField.obstacles.length > 1 ? 's' : ''} defined
-          </div>
-        )}
-      </div>
-
-      {/* ── Parameters ── */}
-      <div style={s.section}>
-        <div style={s.sectionLabel}>Mission Parameters</div>
-
-        <div>
-          <div style={s.label}>Mission name</div>
-          <input style={s.input} value={missionName} onChange={e => setName(e.target.value)} />
-        </div>
-
-        <div>
-          <div style={{ ...s.label, display: 'flex', justifyContent: 'space-between' }}>
-            <span>Spray width (m)</span>
-            <span style={{ color: C.muted }}>
-              {swathRange.min} – {swathRange.max} m
-            </span>
-          </div>
-          <input
-            style={s.input} type="number"
-            min={swathRange.min} max={swathRange.max} step={0.5}
-            value={sprayWidth} onChange={e => setSprayWidth(e.target.value)}
-          />
-        </div>
-
-        <div>
-          <div style={s.label}>Planning strategy</div>
-          <select style={s.select} value={strategy} onChange={e => setStrategy(e.target.value)}>
-            <option value="genetic">Genetic Algorithm (GA)</option>
-            <option value="simple">Simple Grid</option>
-          </select>
-        </div>
-      </div>
-
-      {/* ── Compute ── */}
       <div style={{ padding: '14px 16px', borderBottom: `1px solid ${C.border}` }}>
         {error && <div style={{ ...s.errorBox, marginBottom: 10 }}>{error}</div>}
         <Btn variant='primary' disabled={!canCompute} onClick={handleCompute}>
           {loading
             ? <><Spinner /> Computing…</>
-            : '▶  Compute Mission'}
+            : 'Compute Mission'}
         </Btn>
         {!hasField && (
           <div style={{ fontSize: 11, color: C.muted, textAlign: 'center', marginTop: 7 }}>
@@ -341,70 +445,9 @@ export default function MissionPanel({
         )}
       </div>
 
-      {/* ── Results ── */}
       {mission && (
-        <div style={s.section}>
-          <div style={s.sectionLabel}>Results</div>
-
-          <div style={s.stat}>
-            <span style={s.statKey}>Status</span>
-            <span style={{
-              ...s.badge,
-              background: STATUS_COLOR[mission.status] + '20',
-              color: STATUS_COLOR[mission.status],
-              border: `1px solid ${STATUS_COLOR[mission.status]}40`,
-            }}>
-              <span style={{ fontSize: 8 }}>●</span> {mission.status}
-            </span>
-          </div>
-
-          {mission.status === 'completed' && <>
-            <Divider />
-            <div style={s.stat}>
-              <span style={s.statKey}>Optimal angle</span>
-              <span style={s.statVal}>{mission.best_angle?.toFixed(1)}°</span>
-            </div>
-            <div style={s.stat}>
-              <span style={s.statKey}>Total distance</span>
-              <span style={s.statVal}>{(mission.total_distance / 1000).toFixed(2)} km</span>
-            </div>
-            {mission.coverage_area && (
-              <div style={s.stat}>
-                <span style={s.statKey}>Coverage area</span>
-                <span style={s.statVal}>{(mission.coverage_area / 10000).toFixed(2)} ha</span>
-              </div>
-            )}
-            {mission.n_cycles != null && (
-              <div style={s.stat}>
-                <span style={s.statKey}>Flight cycles</span>
-                <span style={s.statVal}>{mission.n_cycles}</span>
-              </div>
-            )}
-            <div style={s.stat}>
-              <span style={s.statKey}>Waypoints</span>
-              <span style={s.statVal}>{mission.waypoints?.length}</span>
-            </div>
-            <Divider />
-            <Btn variant='default' onClick={handleExport}>
-              ⬇  Export Waypoints (JSON)
-            </Btn>
-          </>}
-
-          {mission.status === 'failed' && (
-            <div style={s.errorBox}>{mission.error_message}</div>
-          )}
-        </div>
+        <ResultsSection mission={mission} onExport={handleExport} />
       )}
     </div>
-  )
-}
-
-function Spinner() {
-  return (
-    <span style={{
-      display: 'inline-block', width: 11, height: 11,
-      border: '2px solid #ffffff40', borderTopColor: '#ffffff',
-      borderRadius: '50%', animation: 'spin 0.7s linear infinite',
-    }} />
   )
 }

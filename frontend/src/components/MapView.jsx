@@ -2,8 +2,24 @@ import { useEffect, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { fieldToGeoJSON, waypointsToGeoJSON, xyToLngLat, fieldBounds } from '../utils/geo'
+import ZoomControls from './ZoomControls'
 
 const EMPTY_FC = { type: 'FeatureCollection', features: [] }
+
+function fmtDist(d) {
+  return d >= 100 ? `${d.toFixed(0)}m` : `${d.toFixed(1)}m`
+}
+
+function makeLabelEl(text) {
+  const el = document.createElement('div')
+  el.style.cssText = [
+    'background:rgba(0,0,0,.55)', 'color:#fff', 'font-size:11px',
+    'padding:1px 5px', 'border-radius:3px', 'white-space:nowrap',
+    'pointer-events:none', 'font-family:inherit', 'line-height:1.4',
+  ].join(';')
+  el.textContent = text
+  return el
+}
 
 const MAP_STYLE = {
   version: 8,
@@ -30,9 +46,10 @@ function dotsFC(points) {
 }
 
 export default function MapView({ field, previewPoints, waypoints, vehicles, drawMode, onMapClick, onMapRightClick }) {
-  const containerRef = useRef(null)
-  const mapRef       = useRef(null)
-  const markersRef   = useRef({})
+  const containerRef    = useRef(null)
+  const mapRef          = useRef(null)
+  const markersRef      = useRef({})
+  const edgeLabelsRef   = useRef([])
   const [ready, setReady] = useState(false)
 
   // ── Init map ──────────────────────────────────────────────────────────────
@@ -44,9 +61,10 @@ export default function MapView({ field, previewPoints, waypoints, vehicles, dra
       style: MAP_STYLE,
       center: [-63.182, -17.783],
       zoom: 16,
+      minZoom: 3,
+      dragRotate: false,
     })
     mapRef.current = map
-    map.addControl(new maplibregl.NavigationControl(), 'top-right')
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-right')
 
     map.on('load', () => {
@@ -105,6 +123,8 @@ export default function MapView({ field, previewPoints, waypoints, vehicles, dra
     return () => {
       Object.values(markersRef.current).forEach(m => m.remove())
       markersRef.current = {}
+      edgeLabelsRef.current.forEach(m => m.remove())
+      edgeLabelsRef.current = []
       map.remove()
       mapRef.current = null
     }
@@ -173,6 +193,35 @@ export default function MapView({ field, previewPoints, waypoints, vehicles, dra
     map.getSource('draw-dots').setData(pts.length > 0 ? dotsFC(pts) : EMPTY_FC)
   }, [ready, previewPoints])
 
+  // ── Edge length labels ────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!ready) return
+    edgeLabelsRef.current.forEach(m => m.remove())
+    edgeLabelsRef.current = []
+
+    const groups = [
+      ...(field?.coordinates?.length >= 2 ? [{ pts: field.coordinates, closed: true }] : []),
+      ...(field?.obstacles ?? []).filter(o => o.length >= 2).map(pts => ({ pts, closed: true })),
+      ...((previewPoints?.length ?? 0) >= 2
+        ? [{ pts: previewPoints, closed: previewPoints.length >= 3 }]
+        : []),
+    ]
+
+    for (const { pts, closed } of groups) {
+      const n = pts.length
+      const count = closed ? n : n - 1
+      for (let i = 0; i < count; i++) {
+        const p1 = pts[i], p2 = pts[(i + 1) % n]
+        const d = Math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
+        const lnglat = xyToLngLat((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2)
+        const marker = new maplibregl.Marker({ element: makeLabelEl(fmtDist(d)), anchor: 'center' })
+          .setLngLat(lnglat)
+          .addTo(mapRef.current)
+        edgeLabelsRef.current.push(marker)
+      }
+    }
+  }, [ready, field, previewPoints])
+
   // ── Vehicle markers ───────────────────────────────────────────────────────
   useEffect(() => {
     if (!ready) return
@@ -200,5 +249,13 @@ export default function MapView({ field, previewPoints, waypoints, vehicles, dra
     }
   }, [ready, vehicles])
 
-  return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+  return (
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+      <ZoomControls
+        onZoomIn={() => mapRef.current?.zoomIn()}
+        onZoomOut={() => mapRef.current?.zoomOut()}
+      />
+    </div>
+  )
 }

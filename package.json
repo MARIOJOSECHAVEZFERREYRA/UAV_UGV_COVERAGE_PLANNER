@@ -1,0 +1,14 @@
+{
+  "name": "agriswarm-planner",
+  "version": "0.1.0",
+  "description": "UAV-UAG Mission Planner",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run backend\" \"npm run frontend\"",
+    "backend": "./venv/bin/uvicorn backend.main:app --reload",
+    "frontend": "cd frontend && npm run dev"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
