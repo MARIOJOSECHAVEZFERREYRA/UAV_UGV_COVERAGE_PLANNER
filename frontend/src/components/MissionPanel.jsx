@@ -127,28 +127,49 @@ function HeaderSection() {
   )
 }
 
-function AircraftSection({ drones, drone, onDroneChange }) {
+function AircraftSection({ drones, drone, onDroneChange, onViewSpecs }) {
   return (
     <div style={s.section}>
       <div style={s.sectionLabel}>Aircraft</div>
       <div>
         <div style={s.label}>Drone model</div>
-        <select style={s.select} value={drone} onChange={e => onDroneChange(e.target.value)}>
-          {drones.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
-        </select>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <select style={{ ...s.select, flex: 1 }} value={drone} onChange={e => onDroneChange(e.target.value)}>
+            {drones.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
+          </select>
+          <button
+            onClick={() => drone && onViewSpecs(drone)}
+            disabled={!drone}
+            title="View drone specifications"
+            style={{
+              flexShrink: 0,
+              width: 32, height: 32,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: C.surface, border: `1px solid ${C.border}`,
+              borderRadius: 6, color: C.accent,
+              fontSize: 13, fontWeight: 700,
+              cursor: drone ? 'pointer' : 'not-allowed',
+              opacity: drone ? 1 : 0.4,
+              fontFamily: 'inherit',
+            }}
+          >
+            i
+          </button>
+        </div>
       </div>
     </div>
   )
 }
 
 function FieldSection({
-  mode, activeField, drawingPtsCount,
-  onToggleDrawPolygon, onToggleDrawObstacle,
+  mode, activeField, drawingPtsCount, basePoint,
+  onToggleDrawPolygon, onToggleDrawObstacle, onToggleSetBasePoint,
   onLoadField, onClear,
 }) {
   const fileRef = useRef(null)
   const isDrawingPolygon  = mode === MODE.DRAW_POLYGON
   const isDrawingObstacle = mode === MODE.DRAW_OBSTACLE
+  const isSettingBase     = mode === MODE.SET_BASE_POINT
   const hasField          = !!activeField
 
   function handleLoadJSON(e) {
@@ -186,6 +207,20 @@ function FieldSection({
           {isDrawingObstacle ? 'Finish Obstacle' : 'Add Obstacle'}
         </Btn>
       </div>
+
+      <Btn
+        variant={isSettingBase ? 'active' : 'default'}
+        active={isSettingBase}
+        onClick={onToggleSetBasePoint}
+      >
+        {isSettingBase ? 'Click on map...' : basePoint ? 'Move Base Point' : 'Set Base Point'}
+      </Btn>
+
+      {basePoint && (
+        <div style={{ fontSize: 11, color: C.muted }}>
+          Base: ({basePoint[0].toFixed(1)}, {basePoint[1].toFixed(1)})
+        </div>
+      )}
 
       <div style={s.btnRow}>
         <Btn variant='default' onClick={() => fileRef.current.click()}>
@@ -300,9 +335,9 @@ function ResultsSection({ mission, onExport }) {
 }
 
 export default function MissionPanel({
-  mode, activeField, drawingPtsCount,
-  onToggleDrawPolygon, onToggleDrawObstacle,
-  onLoadField, onClear, onMissionReady,
+  mode, activeField, drawingPtsCount, basePoint,
+  onToggleDrawPolygon, onToggleDrawObstacle, onToggleSetBasePoint,
+  onLoadField, onClear, onMissionReady, onViewDroneSpecs,
 }) {
   const [drones, setDrones]         = useState([])
   const [drone, setDrone]           = useState('')
@@ -351,7 +386,7 @@ export default function MissionPanel({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: missionName,
-          field: { coordinates: coords, obstacles: obs },
+          field: { coordinates: coords, obstacles: obs, base_point: basePoint ?? null },
           spray_width: Number(sprayWidth),
           strategy,
           drone_name: drone,
@@ -409,14 +444,17 @@ export default function MissionPanel({
         drones={drones}
         drone={drone}
         onDroneChange={handleDroneChange}
+        onViewSpecs={onViewDroneSpecs}
       />
 
       <FieldSection
         mode={mode}
         activeField={activeField}
         drawingPtsCount={drawingPtsCount}
+        basePoint={basePoint}
         onToggleDrawPolygon={onToggleDrawPolygon}
         onToggleDrawObstacle={onToggleDrawObstacle}
+        onToggleSetBasePoint={onToggleSetBasePoint}
         onLoadField={onLoadField}
         onClear={onClear}
       />

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
-from backend.models.mission import MissionStatus
+from backend.db.mission import MissionStatus
 from backend.services import mission_service, telemetry_service
 
 router = APIRouter(tags=["telemetry"])

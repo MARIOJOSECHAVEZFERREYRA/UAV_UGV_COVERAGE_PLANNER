@@ -15,9 +15,9 @@ from shapely.ops import unary_union
 from shapely import affinity
 from typing import List, Tuple
 
-from .decomposition import ConcaveDecomposer
-from .path_planner import BoustrophedonPlanner
-from .path_assembler import PathAssembler
+from ..polygon.decomposition import ConcaveDecomposer
+from ..polygon.path_planner import BoustrophedonPlanner
+from ..polygon.path_assembler import PathAssembler
 
 
 def build_obstacle_union(polygon: Polygon):

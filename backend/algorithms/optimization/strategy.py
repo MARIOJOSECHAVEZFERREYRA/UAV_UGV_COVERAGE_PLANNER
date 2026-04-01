@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from shapely.geometry import Polygon
 from .sweep_angle_optimizer import SweepAngleOptimizer, build_obstacle_union
-from .path_planner import BoustrophedonPlanner
+from ..polygon.path_planner import BoustrophedonPlanner
 
 
 class MissionPlannerStrategy(ABC):

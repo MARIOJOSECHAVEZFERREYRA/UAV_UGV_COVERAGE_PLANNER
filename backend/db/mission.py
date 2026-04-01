@@ -16,7 +16,7 @@ class MissionStatus(str, PyEnum):
 class WaypointType(str, PyEnum):
     sweep = "sweep"
     ferry = "ferry"
-    rendezvous = "rendezvous"
+    base = "base"
 
 
 class Mission(Base):

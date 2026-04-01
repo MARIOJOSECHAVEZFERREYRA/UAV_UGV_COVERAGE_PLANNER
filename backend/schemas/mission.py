@@ -1,12 +1,13 @@
 from datetime import datetime
 from pydantic import BaseModel, Field
 
-from backend.models.mission import MissionStatus, WaypointType
+from backend.db.mission import MissionStatus, WaypointType
 
 
 class FieldPolygon(BaseModel):
     coordinates: list[list[float]] = Field(..., min_length=4)
     obstacles: list[list[list[float]]] = Field(default_factory=list)
+    base_point: list[float] | None = Field(default=None, description="[x, y] static recharge/refill location")
 
 
 class MissionCreate(BaseModel):

@@ -1,21 +1,38 @@
 import { useEffect, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import { fieldToGeoJSON, waypointsToGeoJSON, xyToLngLat, fieldBounds } from '../utils/geo'
-import ZoomControls from './ZoomControls'
-
-const EMPTY_FC = { type: 'FeatureCollection', features: [] }
-
-function fmtDist(d) {
-  return d >= 100 ? `${d.toFixed(0)}m` : `${d.toFixed(1)}m`
-}
+import {
+  fieldToGeoJSON,
+  waypointsByType,
+  xyToLngLat,
+  fieldBounds,
+} from '../utils/geo.js'
+import { MODE } from '../utils/modes.js'
+import {
+  EMPTY_FC,
+  formatDistanceMeters,
+  getEdgeLabelGroups,
+  getEdgeSegments,
+  getPreviewLinePoints,
+  getTrajectoryOpacity,
+  toLineFeatureCollection,
+  toPointFeatureCollection,
+} from '../utils/viewScene.js'
+import ZoomControls from './ZoomControls.jsx'
+import VehicleOverlay from './VehicleOverlay.jsx'
 
 function makeLabelEl(text) {
   const el = document.createElement('div')
   el.style.cssText = [
-    'background:rgba(0,0,0,.55)', 'color:#fff', 'font-size:11px',
-    'padding:1px 5px', 'border-radius:3px', 'white-space:nowrap',
-    'pointer-events:none', 'font-family:inherit', 'line-height:1.4',
+    'background:rgba(0,0,0,.55)',
+    'color:#fff',
+    'font-size:11px',
+    'padding:1px 5px',
+    'border-radius:3px',
+    'white-space:nowrap',
+    'pointer-events:none',
+    'font-family:inherit',
+    'line-height:1.4',
   ].join(';')
   el.textContent = text
   return el
@@ -34,27 +51,29 @@ const MAP_STYLE = {
   layers: [{ id: 'satellite', type: 'raster', source: 'satellite' }],
 }
 
-const VEHICLE_COLORS = { uav: '#FF5722', ugv: '#3F51B5' }
+const arrayPointToLngLat = ([x, y]) => xyToLngLat(x, y)
+const objectPointToLngLat = ({ x, y }) => xyToLngLat(x, y)
 
-function dotsFC(points) {
-  if (!points?.length) return EMPTY_FC
-  return {
-    type: 'Feature',
-    geometry: { type: 'MultiPoint', coordinates: points.map(([x, y]) => xyToLngLat(x, y)) },
-    properties: {},
-  }
-}
-
-export default function MapView({ field, previewPoints, waypoints, vehicles, drawMode, onMapClick, onMapRightClick }) {
-  const containerRef    = useRef(null)
-  const mapRef          = useRef(null)
-  const markersRef      = useRef({})
-  const edgeLabelsRef   = useRef([])
+export default function MapView({
+  field,
+  previewPoints,
+  waypoints,
+  basePoint,
+  vehicles,
+  drawMode,
+  highlight,
+  onMapClick,
+  onMapRightClick,
+}) {
+  const containerRef = useRef(null)
+  const mapRef = useRef(null)
+  const edgeLabelsRef = useRef([])
   const [ready, setReady] = useState(false)
 
-  // ── Init map ──────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (mapRef.current) return
+    if (mapRef.current) {
+      return
+    }
 
     const map = new maplibregl.Map({
       container: containerRef.current,
@@ -64,39 +83,100 @@ export default function MapView({ field, previewPoints, waypoints, vehicles, dra
       minZoom: 3,
       dragRotate: false,
     })
+
     mapRef.current = map
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-right')
 
     map.on('load', () => {
-      // ── Field polygon ──
       map.addSource('field', { type: 'geojson', data: EMPTY_FC })
       map.addLayer({
-        id: 'field-fill', type: 'fill', source: 'field',
-        paint: { 'fill-color': '#38BDF8', 'fill-opacity': 0.08 },
+        id: 'field-fill',
+        type: 'fill',
+        source: 'field',
+        paint: {
+          'fill-color': '#38BDF8',
+          'fill-opacity': 0.08,
+        },
       })
       map.addLayer({
-        id: 'field-border', type: 'line', source: 'field',
-        paint: { 'line-color': '#38BDF8', 'line-width': 2, 'line-opacity': 0.9 },
+        id: 'field-border',
+        type: 'line',
+        source: 'field',
+        paint: {
+          'line-color': '#38BDF8',
+          'line-width': 2,
+          'line-opacity': 0.9,
+        },
       })
 
-      // ── Planned trajectory ──
-      map.addSource('trajectory', { type: 'geojson', data: EMPTY_FC })
+      map.addSource('sweep-trajectory', { type: 'geojson', data: EMPTY_FC })
       map.addLayer({
-        id: 'trajectory', type: 'line', source: 'trajectory',
-        paint: { 'line-color': '#FBBF24', 'line-width': 1.8, 'line-opacity': 0.9 },
+        id: 'sweep-trajectory',
+        type: 'line',
+        source: 'sweep-trajectory',
+        paint: {
+          'line-color': '#22c55e',
+          'line-width': 2,
+          'line-opacity': 0.92,
+        },
       })
 
-      // ── Draw preview fill (polygon in progress) ──
+      map.addSource('ferry-trajectory', { type: 'geojson', data: EMPTY_FC })
+      map.addLayer({
+        id: 'ferry-trajectory',
+        type: 'line',
+        source: 'ferry-trajectory',
+        paint: {
+          'line-color': '#f59e0b',
+          'line-width': 1.6,
+          'line-opacity': 0.85,
+          'line-dasharray': [4, 3],
+        },
+      })
+
+      map.addSource('base-markers', { type: 'geojson', data: EMPTY_FC })
+      map.addLayer({
+        id: 'base-markers',
+        type: 'circle',
+        source: 'base-markers',
+        paint: {
+          'circle-radius': 7,
+          'circle-color': '#ef4444',
+          'circle-stroke-width': 2,
+          'circle-stroke-color': '#fff',
+        },
+      })
+
+      map.addSource('base-preview', { type: 'geojson', data: EMPTY_FC })
+      map.addLayer({
+        id: 'base-preview',
+        type: 'circle',
+        source: 'base-preview',
+        paint: {
+          'circle-radius': 8,
+          'circle-color': '#ef4444',
+          'circle-stroke-width': 2.5,
+          'circle-stroke-color': '#fff',
+          'circle-opacity': 0.9,
+        },
+      })
+
       map.addSource('draw-fill', { type: 'geojson', data: EMPTY_FC })
       map.addLayer({
-        id: 'draw-fill', type: 'fill', source: 'draw-fill',
-        paint: { 'fill-color': '#38BDF8', 'fill-opacity': 0.1 },
+        id: 'draw-fill',
+        type: 'fill',
+        source: 'draw-fill',
+        paint: {
+          'fill-color': '#38BDF8',
+          'fill-opacity': 0.1,
+        },
       })
 
-      // ── Draw preview outline ──
       map.addSource('draw-lines', { type: 'geojson', data: EMPTY_FC })
       map.addLayer({
-        id: 'draw-lines', type: 'line', source: 'draw-lines',
+        id: 'draw-lines',
+        type: 'line',
+        source: 'draw-lines',
         paint: {
           'line-color': '#ffffff',
           'line-width': 1.5,
@@ -105,10 +185,11 @@ export default function MapView({ field, previewPoints, waypoints, vehicles, dra
         },
       })
 
-      // ── Draw preview dots ──
       map.addSource('draw-dots', { type: 'geojson', data: EMPTY_FC })
       map.addLayer({
-        id: 'draw-dots', type: 'circle', source: 'draw-dots',
+        id: 'draw-dots',
+        type: 'circle',
+        source: 'draw-dots',
         paint: {
           'circle-radius': 4,
           'circle-color': '#ffffff',
@@ -121,137 +202,180 @@ export default function MapView({ field, previewPoints, waypoints, vehicles, dra
     })
 
     return () => {
-      Object.values(markersRef.current).forEach(m => m.remove())
-      markersRef.current = {}
-      edgeLabelsRef.current.forEach(m => m.remove())
+      edgeLabelsRef.current.forEach(marker => marker.remove())
       edgeLabelsRef.current = []
       map.remove()
       mapRef.current = null
     }
   }, [])
 
-  // ── Click handlers ────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!ready) return
+    if (!ready) {
+      return
+    }
+
     const map = mapRef.current
-    const handleClick      = (e) => onMapClick?.(e.lngLat.lng, e.lngLat.lat)
-    const handleRightClick = (e) => { e.preventDefault(); onMapRightClick?.() }
+
+    const handleClick = event => {
+      onMapClick?.(event.lngLat.lng, event.lngLat.lat)
+    }
+
+    const handleRightClick = event => {
+      event.preventDefault()
+      onMapRightClick?.()
+    }
+
     map.on('click', handleClick)
     map.on('contextmenu', handleRightClick)
-    map.getCanvas().style.cursor = drawMode !== 'none' ? 'crosshair' : ''
-    return () => { map.off('click', handleClick); map.off('contextmenu', handleRightClick) }
+    map.getCanvas().style.cursor = drawMode !== MODE.NONE ? 'crosshair' : ''
+
+    return () => {
+      map.off('click', handleClick)
+      map.off('contextmenu', handleRightClick)
+    }
   }, [ready, drawMode, onMapClick, onMapRightClick])
 
-  // ── Field polygon ─────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!ready) return
+    if (!ready) {
+      return
+    }
+
     const map = mapRef.current
-    if (!field) { map.getSource('field').setData(EMPTY_FC); return }
+
+    if (!field) {
+      map.getSource('field').setData(EMPTY_FC)
+      return
+    }
+
     map.getSource('field').setData(fieldToGeoJSON(field))
+
     const [[minLng, minLat], [maxLng, maxLat]] = fieldBounds(field)
-    map.fitBounds([[minLng, minLat], [maxLng, maxLat]], { padding: 60, duration: 800 })
+    map.fitBounds([[minLng, minLat], [maxLng, maxLat]], {
+      padding: 60,
+      duration: 800,
+    })
   }, [ready, field])
 
-  // ── Trajectory ────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!ready) return
-    mapRef.current.getSource('trajectory').setData(
-      waypoints?.length ? waypointsToGeoJSON(waypoints) : EMPTY_FC
+    if (!ready) {
+      return
+    }
+
+    const map = mapRef.current
+    const { sweepRuns, ferryRuns, basePoints } = waypointsByType(waypoints)
+
+    map.getSource('sweep-trajectory').setData(
+      toLineFeatureCollection(sweepRuns, objectPointToLngLat)
+    )
+
+    map.getSource('ferry-trajectory').setData(
+      toLineFeatureCollection(ferryRuns, objectPointToLngLat)
+    )
+
+    map.getSource('base-markers').setData(
+      toPointFeatureCollection(basePoints, objectPointToLngLat)
     )
   }, [ready, waypoints])
 
-  // ── Draw preview ──────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!ready) return
-    const map = mapRef.current
-    const pts = previewPoints ?? []
-    const coords = pts.map(([x, y]) => xyToLngLat(x, y))
+    if (!ready) {
+      return
+    }
 
-    // Outline: close ring when >= 3 pts
-    if (pts.length >= 2) {
-      const lineCoords = pts.length >= 3 ? [...coords, coords[0]] : coords
-      map.getSource('draw-lines').setData({
-        type: 'Feature',
-        geometry: { type: 'LineString', coordinates: lineCoords },
-        properties: {},
-      })
+    const map = mapRef.current
+
+    if (!basePoint) {
+      map.getSource('base-preview').setData(EMPTY_FC)
+      return
+    }
+
+    map.getSource('base-preview').setData(
+      toPointFeatureCollection([basePoint], arrayPointToLngLat)
+    )
+  }, [ready, basePoint])
+
+  useEffect(() => {
+    if (!ready) {
+      return
+    }
+
+    const map = mapRef.current
+    const { sweepOpacity, ferryOpacity } = getTrajectoryOpacity(highlight)
+
+    map.setPaintProperty('sweep-trajectory', 'line-opacity', sweepOpacity)
+    map.setPaintProperty('ferry-trajectory', 'line-opacity', ferryOpacity)
+  }, [ready, highlight])
+
+  useEffect(() => {
+    if (!ready) {
+      return
+    }
+
+    const map = mapRef.current
+    const points = previewPoints ?? []
+    const previewLinePoints = getPreviewLinePoints(points)
+
+    if (previewLinePoints.length >= 2) {
+      map.getSource('draw-lines').setData(
+        toLineFeatureCollection([previewLinePoints], arrayPointToLngLat)
+      )
     } else {
       map.getSource('draw-lines').setData(EMPTY_FC)
     }
 
-    // Fill polygon preview when >= 3 pts
-    if (pts.length >= 3) {
+    if (points.length >= 3) {
       map.getSource('draw-fill').setData({
         type: 'Feature',
-        geometry: { type: 'Polygon', coordinates: [[...coords, coords[0]]] },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[...points, points[0]].map(arrayPointToLngLat)],
+        },
         properties: {},
       })
     } else {
       map.getSource('draw-fill').setData(EMPTY_FC)
     }
 
-    map.getSource('draw-dots').setData(pts.length > 0 ? dotsFC(pts) : EMPTY_FC)
+    map.getSource('draw-dots').setData(
+      toPointFeatureCollection(points, arrayPointToLngLat)
+    )
   }, [ready, previewPoints])
 
-  // ── Edge length labels ────────────────────────────────────────────────────
   useEffect(() => {
-    if (!ready) return
-    edgeLabelsRef.current.forEach(m => m.remove())
+    if (!ready) {
+      return
+    }
+
+    edgeLabelsRef.current.forEach(marker => marker.remove())
     edgeLabelsRef.current = []
 
-    const groups = [
-      ...(field?.coordinates?.length >= 2 ? [{ pts: field.coordinates, closed: true }] : []),
-      ...(field?.obstacles ?? []).filter(o => o.length >= 2).map(pts => ({ pts, closed: true })),
-      ...((previewPoints?.length ?? 0) >= 2
-        ? [{ pts: previewPoints, closed: previewPoints.length >= 3 }]
-        : []),
-    ]
+    const groups = getEdgeLabelGroups(field, previewPoints)
 
-    for (const { pts, closed } of groups) {
-      const n = pts.length
-      const count = closed ? n : n - 1
-      for (let i = 0; i < count; i++) {
-        const p1 = pts[i], p2 = pts[(i + 1) % n]
-        const d = Math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
-        const lnglat = xyToLngLat((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2)
-        const marker = new maplibregl.Marker({ element: makeLabelEl(fmtDist(d)), anchor: 'center' })
-          .setLngLat(lnglat)
+    for (const group of groups) {
+      for (const segment of getEdgeSegments(group.points, group.closed)) {
+        const marker = new maplibregl.Marker({
+          element: makeLabelEl(formatDistanceMeters(segment.length)),
+          anchor: 'center',
+        })
+          .setLngLat(arrayPointToLngLat(segment.mid))
           .addTo(mapRef.current)
+
         edgeLabelsRef.current.push(marker)
       }
     }
   }, [ready, field, previewPoints])
 
-  // ── Vehicle markers ───────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!ready) return
-    const active = new Set()
-    for (const v of vehicles ?? []) {
-      active.add(v.vehicle_id)
-      const lnglat = xyToLngLat(v.x, v.y)
-      if (markersRef.current[v.vehicle_id]) {
-        markersRef.current[v.vehicle_id].setLngLat(lnglat)
-      } else {
-        const el = document.createElement('div')
-        el.style.cssText = `
-          width: 14px; height: 14px; border-radius: 50%;
-          background: ${VEHICLE_COLORS[v.vehicle_id] ?? '#9E9E9E'};
-          border: 2px solid #fff; box-shadow: 0 0 8px rgba(0,0,0,.6);
-        `
-        markersRef.current[v.vehicle_id] = new maplibregl.Marker({ element: el })
-          .setLngLat(lnglat)
-          .setPopup(new maplibregl.Popup({ offset: 16 }).setText(v.vehicle_id.toUpperCase()))
-          .addTo(mapRef.current)
-      }
-    }
-    for (const [id, marker] of Object.entries(markersRef.current)) {
-      if (!active.has(id)) { marker.remove(); delete markersRef.current[id] }
-    }
-  }, [ready, vehicles])
-
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+
+      <VehicleOverlay
+        renderer="map"
+        vehicles={vehicles}
+        mapRef={mapRef}
+        ready={ready}
+      />
+
       <ZoomControls
         onZoomIn={() => mapRef.current?.zoomIn()}
         onZoomOut={() => mapRef.current?.zoomOut()}
