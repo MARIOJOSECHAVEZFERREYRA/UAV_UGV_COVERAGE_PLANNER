@@ -32,16 +32,31 @@ function VehicleSvgMarker({ vehicle, toSvg, px }) {
   const radius = 6.5 * px
   const labelOffsetY = 10 * px
 
+  // Determine marker color based on segment type
+  let markerColor = color
+  if (vehicle.segment_type === 'spray') markerColor = '#22c55e'
+  else if (vehicle.segment_type === 'ferry') markerColor = '#f59e0b'
+  else if (vehicle.segment_type === 'deadhead') markerColor = '#ef4444'
+  else if (vehicle.segment_type === 'service') markerColor = '#9ca3af'
+
   return (
     <g>
       <circle
         cx={sx}
         cy={sy}
         r={radius}
-        fill={color}
+        fill={markerColor}
         stroke="#fff"
         strokeWidth={2 * px}
       />
+      {vehicle.pump_active && (
+        <circle
+          cx={sx + radius + 1 * px}
+          cy={sy}
+          r={2 * px}
+          fill="#3f51b5"
+        />
+      )}
       <text
         x={sx}
         y={sy - labelOffsetY}
@@ -55,6 +70,21 @@ function VehicleSvgMarker({ vehicle, toSvg, px }) {
       >
         {vehicle.vehicle_id.toUpperCase()}
       </text>
+      {vehicle.vehicle_id === 'uav' && (
+        <>
+          <text
+            x={sx}
+            y={sy + labelOffsetY + 2 * px}
+            fontSize={9 * px}
+            textAnchor="middle"
+            fill="#d1d5db"
+            stroke="none"
+            style={{ userSelect: 'none', pointerEvents: 'none' }}
+          >
+            {vehicle.battery_pct.toFixed(0)}% · {vehicle.reagent_l.toFixed(1)}L
+          </text>
+        </>
+      )}
     </g>
   )
 }

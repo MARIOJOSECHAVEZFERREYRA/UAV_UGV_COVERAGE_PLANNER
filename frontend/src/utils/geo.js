@@ -98,50 +98,87 @@ export function wouldSelfIntersect(pts, newPt) {
  * Split a flat waypoint array into typed runs for layered rendering.
  *
  * Returns:
- *   sweepRuns  — array of [{x,y}] arrays, one per contiguous spray run
- *   ferryRuns  — array of [{x,y}] arrays, one per contiguous transit run
- *   basePoints — array of {x,y} for each base/recharge waypoint
+ *   sweepRuns     — array of [{x,y}] arrays, one per contiguous spray run
+ *   ferryRuns     — array of [{x,y}] arrays, one per contiguous ferry run (inside field)
+ *   deadheadRuns  — array of [{x,y}] arrays, one per contiguous deadhead run (outside field)
+ *   basePoints    — array of {x,y} for each base/recharge waypoint
  *
  * Runs share their endpoint with the adjacent run so lines connect visually.
  */
 export function waypointsByType(waypoints) {
-  const sweepRuns  = []
-  const ferryRuns  = []
+  const sweepRuns = []
+  const ferryRuns = []
+  const deadheadRuns = []
   const basePoints = []
 
   let sweepBuf = null
   let ferryBuf = null
+  let deadheadBuf = null
 
   for (const wp of waypoints ?? []) {
     const pt = { x: wp.x, y: wp.y }
 
     if (wp.waypoint_type === 'base') {
-      if (sweepBuf?.length) { sweepRuns.push(sweepBuf); sweepBuf = null }
-      if (ferryBuf?.length) { ferryRuns.push(ferryBuf); ferryBuf = null }
-      basePoints.push(pt)
-    } else if (wp.waypoint_type === 'sweep') {
-      if (ferryBuf?.length) {
-        ferryBuf.push(pt)        // shared connecting point
-        ferryRuns.push(ferryBuf)
-        ferryBuf = null
-      }
-      if (!sweepBuf) sweepBuf = [pt]
-      else sweepBuf.push(pt)
-    } else {                     // ferry / transit
       if (sweepBuf?.length) {
-        sweepBuf.push(pt)        // shared connecting point
         sweepRuns.push(sweepBuf)
         sweepBuf = null
       }
+      if (ferryBuf?.length) {
+        ferryRuns.push(ferryBuf)
+        ferryBuf = null
+      }
+      if (deadheadBuf?.length) {
+        deadheadRuns.push(deadheadBuf)
+        deadheadBuf = null
+      }
+      basePoints.push(pt)
+    } else if (wp.waypoint_type === 'sweep') {
+      if (ferryBuf?.length) {
+        ferryBuf.push(pt)
+        ferryRuns.push(ferryBuf)
+        ferryBuf = null
+      }
+      if (deadheadBuf?.length) {
+        deadheadBuf.push(pt)
+        deadheadRuns.push(deadheadBuf)
+        deadheadBuf = null
+      }
+      if (!sweepBuf) sweepBuf = [pt]
+      else sweepBuf.push(pt)
+    } else if (wp.waypoint_type === 'ferry') {
+      if (sweepBuf?.length) {
+        sweepBuf.push(pt)
+        sweepRuns.push(sweepBuf)
+        sweepBuf = null
+      }
+      if (deadheadBuf?.length) {
+        deadheadBuf.push(pt)
+        deadheadRuns.push(deadheadBuf)
+        deadheadBuf = null
+      }
       if (!ferryBuf) ferryBuf = [pt]
       else ferryBuf.push(pt)
+    } else if (wp.waypoint_type === 'deadhead') {
+      if (sweepBuf?.length) {
+        sweepBuf.push(pt)
+        sweepRuns.push(sweepBuf)
+        sweepBuf = null
+      }
+      if (ferryBuf?.length) {
+        ferryBuf.push(pt)
+        ferryRuns.push(ferryBuf)
+        ferryBuf = null
+      }
+      if (!deadheadBuf) deadheadBuf = [pt]
+      else deadheadBuf.push(pt)
     }
   }
 
   if (sweepBuf?.length) sweepRuns.push(sweepBuf)
   if (ferryBuf?.length) ferryRuns.push(ferryBuf)
+  if (deadheadBuf?.length) deadheadRuns.push(deadheadBuf)
 
-  return { sweepRuns, ferryRuns, basePoints }
+  return { sweepRuns, ferryRuns, deadheadRuns, basePoints }
 }
 
 /** Compute the bounding box [[minLng, minLat], [maxLng, maxLat]] of a field. */

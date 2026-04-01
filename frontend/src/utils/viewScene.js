@@ -44,8 +44,9 @@ export function getPreviewLinePoints(points) {
 
 export function getTrajectoryOpacity(highlight) {
   return {
-    sweepOpacity: highlight === 'ferry' ? 0.12 : 0.92,
-    ferryOpacity: highlight === 'sweep' ? 0.12 : 0.85,
+    sweepOpacity: highlight && highlight !== 'sweep' ? 0.12 : 0.92,
+    ferryOpacity: highlight && highlight !== 'ferry' ? 0.12 : 0.85,
+    deadheadOpacity: highlight && highlight !== 'deadhead' ? 0.12 : 0.75,
   }
 }
 

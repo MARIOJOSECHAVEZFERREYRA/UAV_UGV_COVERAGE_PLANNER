@@ -16,6 +16,7 @@ class MissionStatus(str, PyEnum):
 class WaypointType(str, PyEnum):
     sweep = "sweep"
     ferry = "ferry"
+    deadhead = "deadhead"
     base = "base"
 
 
@@ -42,6 +43,7 @@ class Mission(Base):
     coverage_area: Mapped[float | None] = mapped_column(Float, nullable=True)
     n_cycles: Mapped[int | None] = mapped_column(Integer, nullable=True)
     metrics_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mission_cycles_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
@@ -67,5 +69,6 @@ class Waypoint(Base):
     waypoint_type: Mapped[WaypointType] = mapped_column(
         Enum(WaypointType), default=WaypointType.sweep, nullable=False
     )
+    cycle_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     mission: Mapped["Mission"] = relationship("Mission", back_populates="waypoints")

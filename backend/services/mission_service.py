@@ -1,7 +1,9 @@
 """Mission planning service — uses MissionController for full pipeline."""
 import json
+import math
 import traceback
 
+from shapely.geometry import Point
 from sqlalchemy.orm import Session
 
 from ..controllers.mission_controller import MissionController
@@ -53,40 +55,120 @@ def compute_mission(db: Session, mission: Mission) -> Mission:
         best_path      = result.get("best_path")
         safe_polygon   = result.get("safe_polygon")
 
-        # Extract waypoints from cycles
+        # Store mission_cycles_json for later simulation use
+        def serialize_point(p):
+            """Safe conversion of point-like objects to [x, y] list."""
+            try:
+                if hasattr(p, "__getitem__"):
+                    return [float(p[0]), float(p[1])]
+                elif hasattr(p, "x") and hasattr(p, "y"):
+                    return [float(p.x), float(p.y)]
+                else:
+                    return [0.0, 0.0]
+            except (IndexError, AttributeError, TypeError):
+                return [0.0, 0.0]
+
+        def serialize_cycle(cycle):
+            """Convert cycle dict to JSON-serializable format."""
+            segments = []
+            for seg in cycle.get("segments", []):
+                try:
+                    p1 = seg.get("p1")
+                    p2 = seg.get("p2")
+                    segments.append({
+                        "p1": serialize_point(p1),
+                        "p2": serialize_point(p2),
+                        "spraying": bool(seg.get("spraying", False)),
+                    })
+                except Exception as e:
+                    print(f"Error serializing segment: {e}, seg={seg}")
+                    continue
+
+            base = cycle.get("base_point")
+            return {
+                "segments": segments,
+                "base_point": serialize_point(base),
+                "swath_width": float(cycle.get("swath_width", 0.0)),
+            }
+
+        try:
+            mission.mission_cycles_json = json.dumps(
+                [serialize_cycle(cycle) for cycle in mission_cycles]
+            )
+        except Exception as e:
+            print(f"Error serializing mission_cycles: {e}")
+            mission.mission_cycles_json = None
+
+        # Extract waypoints from cycles with proper segment type classification
         waypoints = []
         seq = 0
         prev_pt = None
 
-        for cycle in mission_cycles:
-            for group in cycle.get("visual_groups", []):
-                wp_type = WaypointType.sweep if group["is_spraying"] else WaypointType.ferry
-                for pt in group["path"]:
-                    xy = (float(pt[0]), float(pt[1]))
-                    if prev_pt == xy:
-                        continue
-                    waypoints.append(Waypoint(
-                        mission_id=mission.id,
-                        sequence=seq,
-                        x=xy[0], y=xy[1],
-                        waypoint_type=wp_type,
-                    ))
-                    prev_pt = xy
-                    seq += 1
+        for cycle_idx, cycle in enumerate(mission_cycles):
+            base_point = tuple(cycle.get("base_point", [0, 0]))
+            cycle_segments = cycle.get("segments", [])
 
-            # Base point at end of each cycle (drone returns here to recharge/refill)
-            cycle_base = cycle.get("base_point")
-            if cycle_base:
-                base_xy = (float(cycle_base[0]), float(cycle_base[1]))
-                if prev_pt != base_xy:
-                    waypoints.append(Waypoint(
+            # Process each segment in this cycle
+            for seg in cycle_segments:
+                p1 = (float(seg["p1"][0]), float(seg["p1"][1]))
+                p2 = (float(seg["p2"][0]), float(seg["p2"][1]))
+                is_spraying = seg.get("spraying", False)
+
+                # Classify segment type
+                seg_type = _classify_segment_type(
+                    p1, p2, is_spraying, base_point, safe_polygon
+                )
+
+                # Add waypoint for p1 (with dedup and type update at boundaries)
+                if prev_pt == p1:
+                    # Boundary point: update previous waypoint's type
+                    if waypoints:
+                        waypoints[-1].waypoint_type = seg_type
+                        waypoints[-1].cycle_index = cycle_idx
+                else:
+                    waypoints.append(
+                        Waypoint(
+                            mission_id=mission.id,
+                            sequence=seq,
+                            x=p1[0],
+                            y=p1[1],
+                            waypoint_type=seg_type,
+                            cycle_index=cycle_idx,
+                        )
+                    )
+                    seq += 1
+                    prev_pt = p1
+
+                # Add waypoint for p2
+                if prev_pt != p2:
+                    waypoints.append(
+                        Waypoint(
+                            mission_id=mission.id,
+                            sequence=seq,
+                            x=p2[0],
+                            y=p2[1],
+                            waypoint_type=seg_type,
+                            cycle_index=cycle_idx,
+                        )
+                    )
+                    seq += 1
+                    prev_pt = p2
+
+            # Base point at end of cycle
+            cycle_base = tuple(cycle.get("base_point", [0, 0]))
+            if prev_pt != cycle_base:
+                waypoints.append(
+                    Waypoint(
                         mission_id=mission.id,
                         sequence=seq,
-                        x=base_xy[0], y=base_xy[1],
+                        x=cycle_base[0],
+                        y=cycle_base[1],
                         waypoint_type=WaypointType.base,
-                    ))
-                    prev_pt = base_xy
-                    seq += 1
+                        cycle_index=cycle_idx,
+                    )
+                )
+                seq += 1
+                prev_pt = cycle_base
 
         db.add_all(waypoints)
 
@@ -113,3 +195,34 @@ def get_mission(db: Session, mission_id: int) -> Mission | None:
 
 def list_missions(db: Session, skip: int = 0, limit: int = 50) -> list[Mission]:
     return db.query(Mission).order_by(Mission.created_at.desc()).offset(skip).limit(limit).all()
+
+
+def _classify_segment_type(p1, p2, is_spraying, base_point, polygon):
+    """
+    Classifies a segment as spray, ferry, or deadhead.
+
+    Rules:
+    1. If is_spraying=True → WaypointType.sweep
+    2. If either endpoint is the base_point (within 0.5m) → deadhead
+    3. If midpoint is inside the work polygon → ferry
+    4. Otherwise → deadhead
+    """
+    if is_spraying:
+        return WaypointType.sweep
+
+    BASE_TOL = 0.5
+    p1_dist_to_base = math.hypot(p1[0] - base_point[0], p1[1] - base_point[1])
+    p2_dist_to_base = math.hypot(p2[0] - base_point[0], p2[1] - base_point[1])
+
+    if p1_dist_to_base < BASE_TOL or p2_dist_to_base < BASE_TOL:
+        return WaypointType.deadhead
+
+    # Check midpoint
+    mid_x = (p1[0] + p2[0]) / 2
+    mid_y = (p1[1] + p2[1]) / 2
+    mid_pt = Point(mid_x, mid_y)
+
+    if polygon.contains(mid_pt) or polygon.boundary.distance(mid_pt) < 0.1:
+        return WaypointType.ferry
+
+    return WaypointType.deadhead

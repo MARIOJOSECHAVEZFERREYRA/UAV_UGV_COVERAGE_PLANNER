@@ -134,6 +134,19 @@ export default function MapView({
         },
       })
 
+      map.addSource('deadhead-trajectory', { type: 'geojson', data: EMPTY_FC })
+      map.addLayer({
+        id: 'deadhead-trajectory',
+        type: 'line',
+        source: 'deadhead-trajectory',
+        paint: {
+          'line-color': '#ef4444',
+          'line-width': 1.6,
+          'line-opacity': 0.75,
+          'line-dasharray': [2, 2],
+        },
+      })
+
       map.addSource('base-markers', { type: 'geojson', data: EMPTY_FC })
       map.addLayer({
         id: 'base-markers',
@@ -262,7 +275,7 @@ export default function MapView({
     }
 
     const map = mapRef.current
-    const { sweepRuns, ferryRuns, basePoints } = waypointsByType(waypoints)
+    const { sweepRuns, ferryRuns, deadheadRuns, basePoints } = waypointsByType(waypoints)
 
     map.getSource('sweep-trajectory').setData(
       toLineFeatureCollection(sweepRuns, objectPointToLngLat)
@@ -270,6 +283,10 @@ export default function MapView({
 
     map.getSource('ferry-trajectory').setData(
       toLineFeatureCollection(ferryRuns, objectPointToLngLat)
+    )
+
+    map.getSource('deadhead-trajectory').setData(
+      toLineFeatureCollection(deadheadRuns, objectPointToLngLat)
     )
 
     map.getSource('base-markers').setData(
@@ -300,10 +317,11 @@ export default function MapView({
     }
 
     const map = mapRef.current
-    const { sweepOpacity, ferryOpacity } = getTrajectoryOpacity(highlight)
+    const { sweepOpacity, ferryOpacity, deadheadOpacity } = getTrajectoryOpacity(highlight)
 
     map.setPaintProperty('sweep-trajectory', 'line-opacity', sweepOpacity)
     map.setPaintProperty('ferry-trajectory', 'line-opacity', ferryOpacity)
+    map.setPaintProperty('deadhead-trajectory', 'line-opacity', deadheadOpacity)
   }, [ready, highlight])
 
   useEffect(() => {

@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.database import Base, engine
 from backend.db import drone  # noqa: F401 — registers Drone table with Base
-from backend.routers import fields, mission, telemetry, drones
+from backend.routers import fields, mission, simulation, drones
 
 # Create tables on startup
 Base.metadata.create_all(bind=engine)
@@ -19,7 +19,7 @@ app.add_middleware(
 
 app.include_router(fields.router)
 app.include_router(mission.router)
-app.include_router(telemetry.router)
+app.include_router(simulation.router)
 app.include_router(drones.router)
 
 

@@ -4,11 +4,11 @@ import PolygonCanvas from './components/PolygonCanvas.jsx'
 import MissionPanel from './components/MissionPanel.jsx'
 import DroneSpecsView from './components/DroneSpecsView.jsx'
 import ViewToggle from './components/ViewToggle.jsx'
-import TelemetryBadge from './components/TelemetryBadge.jsx'
+import SimulationBadge from './components/SimulationBadge.jsx'
 import IntersectionWarning from './components/IntersectionWarning.jsx'
 import LayerToggle from './components/LayerToggle.jsx'
 import DrawingHint from './components/DrawingHint.jsx'
-import { useTelemetry } from './hooks/useTelemetry.js'
+import { useSimulation } from './hooks/useSimulation.js'
 import { useMissionState } from './hooks/useMissionState.js'
 import { useFieldEditor } from './hooks/useFieldEditor.js'
 import { MODE } from './utils/modes.js'
@@ -43,7 +43,7 @@ export default function App() {
     handleClear,
   } = useFieldEditor(resetMission)
 
-  const { vehicles, connected } = useTelemetry(
+  const { vehicles, connected, simTimeS, playbackSpeed, setPlayback } = useSimulation(
     activeMission?.id,
     activeMission?.status
   )
@@ -161,7 +161,12 @@ export default function App() {
             )}
 
             {activeMission && (
-              <TelemetryBadge connected={connected} />
+              <SimulationBadge
+                connected={connected}
+                simTimeS={simTimeS}
+                playbackSpeed={playbackSpeed}
+                onPlaybackChange={setPlayback}
+              />
             )}
 
             {intersectionWarning && <IntersectionWarning />}

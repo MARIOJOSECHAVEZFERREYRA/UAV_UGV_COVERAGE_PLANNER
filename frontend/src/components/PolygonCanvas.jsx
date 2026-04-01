@@ -204,8 +204,8 @@ export default function PolygonCanvas({
 
   const previewLinePoints = getPreviewLinePoints(previewPoints ?? [])
   const drawColor = getDrawColor(drawMode)
-  const { sweepOpacity, ferryOpacity } = getTrajectoryOpacity(highlight)
-  const { sweepRuns, ferryRuns, basePoints } = waypointsByType(waypoints)
+  const { sweepOpacity, ferryOpacity, deadheadOpacity } = getTrajectoryOpacity(highlight)
+  const { sweepRuns, ferryRuns, deadheadRuns, basePoints } = waypointsByType(waypoints)
 
   useEffect(() => {
     const element = wrapRef.current
@@ -479,6 +479,18 @@ export default function PolygonCanvas({
             strokeWidth={1.6 * px}
             strokeOpacity={ferryOpacity}
             strokeDasharray={`${6 * px} ${4 * px}`}
+          />
+        ))}
+
+        {deadheadRuns.map((run, index) => (
+          <polyline
+            key={`deadhead-${index}`}
+            points={run.map(({ x, y }) => mToSVG(x, y).join(',')).join(' ')}
+            fill="none"
+            stroke="#ef4444"
+            strokeWidth={1.6 * px}
+            strokeOpacity={deadheadOpacity}
+            strokeDasharray={`${3 * px} ${2 * px}`}
           />
         ))}
 
