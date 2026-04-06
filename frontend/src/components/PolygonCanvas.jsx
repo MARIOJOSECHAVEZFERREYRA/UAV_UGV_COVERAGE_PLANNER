@@ -6,10 +6,30 @@ import {
   getPreviewLinePoints,
   getTrajectoryOpacity,
 } from '../utils/viewScene.js'
+import { TRAJ, DRAW, CYCLE_PALETTE } from '../utils/colors.js'
 import ZoomControls from './ZoomControls.jsx'
 import EdgeLabelsSvg from './EdgeLabelsSvg.jsx'
 import BaseMarkerSvg from './BaseMarkerSvg.jsx'
 import VehicleOverlay from './VehicleOverlay.jsx'
+
+const UGV_COLOR = DRAW.ugv
+
+function MissionMarkerSvg({ sx, sy, r, label, color, strokeWidth }) {
+  const fontSize = r * 1.15
+  return (
+    <g>
+      <circle cx={sx} cy={sy} r={r * 1.35} fill={color} stroke="#fff" strokeWidth={strokeWidth} />
+      <text
+        x={sx} y={sy}
+        textAnchor="middle" dominantBaseline="central"
+        fontSize={fontSize} fontWeight="700" fill="#fff"
+        style={{ pointerEvents: 'none', userSelect: 'none' }}
+      >
+        {label}
+      </text>
+    </g>
+  )
+}
 
 const W = 1000
 const OX = W / 2
@@ -169,14 +189,14 @@ const SCALE_BAR_STYLE = {
   textAlign: 'center',
 }
 
-const SWEEP_COLOR = '#22c55e'
-const FERRY_COLOR = '#f59e0b'
 
 export default function PolygonCanvas({
   field,
   previewPoints,
   waypoints,
   basePoint,
+  ugvRoute,
+  safeZone,
   vehicles,
   drawMode,
   highlight,
@@ -189,6 +209,8 @@ export default function PolygonCanvas({
   const movedRef = useRef(false)
   const initRef = useRef(false)
 
+  useEffect(() => () => clearTimeout(hoverLeaveTimer.current), [])
+
   const [viewBox, setViewBox] = useState({
     x: 0,
     y: OY_SVG - W * 0.7 / 2,
@@ -197,15 +219,31 @@ export default function PolygonCanvas({
   })
   const [isPanning, setIsPanning] = useState(false)
   const [pixelWidth, setPixelWidth] = useState(800)
+  const [hoveredCycle, setHoveredCycle] = useState(null)
+  const [selectedCycle, setSelectedCycle] = useState(null)
+  const hoverLeaveTimer = useRef(null)
+
+  useEffect(() => {
+    setSelectedCycle(null)
+    setHoveredCycle(null)
+  }, [highlight])
 
   const safeViewBox = safe(viewBox)
   const zoom = W / safeViewBox.w
   const px = 1 / zoom
 
-  const previewLinePoints = getPreviewLinePoints(previewPoints ?? [])
+  const isUgvRoute = drawMode === MODE.DRAW_UGV_ROUTE
+  const previewLinePoints = isUgvRoute
+    ? (previewPoints?.length >= 2 ? previewPoints : [])
+    : getPreviewLinePoints(previewPoints ?? [])
   const drawColor = getDrawColor(drawMode)
   const { sweepOpacity, ferryOpacity, deadheadOpacity } = getTrajectoryOpacity(highlight)
   const { sweepRuns, ferryRuns, deadheadRuns, basePoints } = waypointsByType(waypoints)
+
+  const activeCycle = selectedCycle ?? hoveredCycle
+
+  const cycleOp = (run, base) =>
+    activeCycle !== null && run.cycleIndex !== activeCycle ? 0.1 : base
 
   useEffect(() => {
     const element = wrapRef.current
@@ -342,6 +380,18 @@ export default function PolygonCanvas({
     setIsPanning(false)
   }, [])
 
+  // When the mouse leaves the SVG entirely, clear hover immediately (no debounce).
+  // The debounce is only useful when moving between adjacent run segments inside the SVG.
+  const handleSvgLeave = useCallback(() => {
+    dragRef.current = null
+    setIsPanning(false)
+    if (hoverLeaveTimer.current) {
+      clearTimeout(hoverLeaveTimer.current)
+      hoverLeaveTimer.current = null
+    }
+    setHoveredCycle(null)
+  }, [])
+
   const handleClick = useCallback((event) => {
     if (movedRef.current) {
       movedRef.current = false
@@ -376,6 +426,18 @@ export default function PolygonCanvas({
     onCanvasRightClick?.()
   }, [drawMode, onCanvasRightClick])
 
+  const handleCycleEnter = useCallback((ci) => {
+    if (hoverLeaveTimer.current) {
+      clearTimeout(hoverLeaveTimer.current)
+      hoverLeaveTimer.current = null
+    }
+    setHoveredCycle(ci)
+  }, [])
+
+  const handleCycleLeave = useCallback(() => {
+    hoverLeaveTimer.current = setTimeout(() => setHoveredCycle(null), 60)
+  }, [])
+
   const gridLines = buildGridLines(safeViewBox, px)
   const gridLabels = buildGridLabels(safeViewBox, px, zoom)
 
@@ -388,6 +450,8 @@ export default function PolygonCanvas({
     ? 'grabbing'
     : drawMode !== MODE.NONE
     ? 'crosshair'
+    : hoveredCycle !== null
+    ? 'pointer'
     : 'default'
 
   return (
@@ -408,7 +472,7 @@ export default function PolygonCanvas({
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
+        onMouseLeave={handleSvgLeave}
       >
         <rect
           x={safeViewBox.x}
@@ -425,11 +489,22 @@ export default function PolygonCanvas({
         {field?.coordinates?.length >= 3 && (
           <polygon
             points={toPoints(field.coordinates)}
-            fill="#38BDF8"
+            fill={DRAW.field}
             fillOpacity={0.12}
-            stroke="#38BDF8"
+            stroke={DRAW.field}
             strokeWidth={2 * px}
             strokeLinejoin="round"
+          />
+        )}
+
+        {safeZone?.length >= 3 && highlight === 'ferry' && (
+          <polyline
+            points={[...safeZone, safeZone[0]].map(([x, y]) => mToSVG(x, y).join(',')).join(' ')}
+            fill="none"
+            stroke="#ef4444"
+            strokeWidth={1.5 * px}
+            strokeDasharray={`${4 * px} ${3 * px}`}
+            strokeOpacity={0.65}
           />
         )}
 
@@ -437,7 +512,7 @@ export default function PolygonCanvas({
           <EdgeLabelsSvg
             points={field.coordinates}
             px={px}
-            color="#38BDF8"
+            color={DRAW.field}
             closed
             toSvg={mToSVG}
           />
@@ -448,9 +523,9 @@ export default function PolygonCanvas({
             <polygon
               key={index}
               points={toPoints(obstacle)}
-              fill="#ef4444"
+              fill={DRAW.obstacle}
               fillOpacity={0.15}
-              stroke="#ef4444"
+              stroke={DRAW.obstacle}
               strokeWidth={1.5 * px}
               strokeLinejoin="round"
             />
@@ -463,61 +538,142 @@ export default function PolygonCanvas({
               key={`obstacle-label-${index}`}
               points={obstacle}
               px={px}
-              color="#ef4444"
+              color={DRAW.obstacle}
               closed
               toSvg={mToSVG}
             />
           ) : null
         )}
 
+        {deadheadRuns.map((run, index) => {
+          const ci = run.cycleIndex ?? 0
+          const color = CYCLE_PALETTE[ci % CYCLE_PALETTE.length]
+          const isActive = activeCycle === null || activeCycle === ci
+          const pts = run.points.map(({ x, y }) => mToSVG(x, y).join(',')).join(' ')
+          return (
+            <g key={`deadhead-${index}`}>
+              <polyline
+                points={pts}
+                fill="none"
+                stroke={color}
+                strokeWidth={(isActive ? 2 : 1.6) * px}
+                strokeOpacity={cycleOp(run, deadheadOpacity)}
+                strokeDasharray={`${3 * px} ${2 * px}`}
+                style={{ pointerEvents: 'none', transition: 'stroke-opacity 0.15s' }}
+              />
+              {drawMode === MODE.NONE && (
+                <polyline
+                  points={pts}
+                  fill="none"
+                  stroke="transparent"
+                  strokeWidth={14 * px}
+                  strokeLinecap="round"
+                  pointerEvents="all"
+                  style={{ cursor: 'pointer' }}
+                  onMouseEnter={() => handleCycleEnter(ci)}
+                  onMouseLeave={handleCycleLeave}
+                  onClick={(e) => { e.stopPropagation(); setSelectedCycle(p => p === ci ? null : ci) }}
+                >
+                  <title>Cycle {ci + 1}</title>
+                </polyline>
+              )}
+            </g>
+          )
+        })}
+
         {ferryRuns.map((run, index) => (
           <polyline
             key={`ferry-${index}`}
-            points={run.map(({ x, y }) => mToSVG(x, y).join(',')).join(' ')}
+            points={run.points.map(({ x, y }) => mToSVG(x, y).join(',')).join(' ')}
             fill="none"
-            stroke={FERRY_COLOR}
+            stroke={TRAJ.ferry}
             strokeWidth={1.6 * px}
             strokeOpacity={ferryOpacity}
             strokeDasharray={`${6 * px} ${4 * px}`}
+            style={{ pointerEvents: 'none' }}
           />
         ))}
 
-        {deadheadRuns.map((run, index) => (
-          <polyline
-            key={`deadhead-${index}`}
-            points={run.map(({ x, y }) => mToSVG(x, y).join(',')).join(' ')}
-            fill="none"
-            stroke="#ef4444"
-            strokeWidth={1.6 * px}
-            strokeOpacity={deadheadOpacity}
-            strokeDasharray={`${3 * px} ${2 * px}`}
-          />
-        ))}
-
-        {sweepRuns.map((run, index) => (
-          <polyline
-            key={`sweep-${index}`}
-            points={run.map(({ x, y }) => mToSVG(x, y).join(',')).join(' ')}
-            fill="none"
-            stroke={SWEEP_COLOR}
-            strokeWidth={2 * px}
-            strokeOpacity={sweepOpacity}
-          />
-        ))}
-
-        {basePoints.map((point, index) => {
-          const [sx, sy] = mToSVG(point.x, point.y)
-
+        {sweepRuns.map((run, index) => {
+          const ci = run.cycleIndex ?? 0
+          const color = CYCLE_PALETTE[ci % CYCLE_PALETTE.length]
+          const isActive = activeCycle === null || activeCycle === ci
+          const pts = run.points.map(({ x, y }) => mToSVG(x, y).join(',')).join(' ')
           return (
-            <BaseMarkerSvg
-              key={`base-${index}`}
-              sx={sx}
-              sy={sy}
-              r={6 * px}
-              strokeWidth={1.5 * px}
-            />
+            <g key={`sweep-${index}`}>
+              <polyline
+                points={pts}
+                fill="none"
+                stroke={color}
+                strokeWidth={(isActive ? 2.5 : 2) * px}
+                strokeOpacity={cycleOp(run, sweepOpacity)}
+                style={{ pointerEvents: 'none', transition: 'stroke-opacity 0.15s' }}
+              />
+              {drawMode === MODE.NONE && (
+                <polyline
+                  points={pts}
+                  fill="none"
+                  stroke="transparent"
+                  strokeWidth={14 * px}
+                  strokeLinecap="round"
+                  pointerEvents="all"
+                  style={{ cursor: 'pointer' }}
+                  onMouseEnter={() => handleCycleEnter(ci)}
+                  onMouseLeave={handleCycleLeave}
+                  onClick={(e) => { e.stopPropagation(); setSelectedCycle(p => p === ci ? null : ci) }}
+                >
+                  <title>Cycle {ci + 1}</title>
+                </polyline>
+              )}
+            </g>
           )
         })}
+
+        {(() => {
+          // Deduplicate base points to assign S / R1..Rn / E / Base labels
+          const seen = new Set()
+          const uniqueBases = basePoints.filter(pt => {
+            const key = `${pt.x.toFixed(1)},${pt.y.toFixed(1)}`
+            if (seen.has(key)) return false
+            seen.add(key)
+            return true
+          })
+          const isMobile = uniqueBases.length > 1
+
+          // "S" — first non-base waypoint
+          const firstWp = waypoints?.find(wp => wp.waypoint_type !== 'base')
+
+          return (
+            <>
+              {firstWp && (() => {
+                const [sx, sy] = mToSVG(firstWp.x, firstWp.y)
+                return (
+                  <MissionMarkerSvg
+                    key="marker-s"
+                    sx={sx} sy={sy} r={6 * px}
+                    strokeWidth={1.5 * px}
+                    label="S" color="#27ae60"
+                  />
+                )
+              })()}
+
+              {uniqueBases.map((pt, i) => {
+                const [sx, sy] = mToSVG(pt.x, pt.y)
+                const isLast = i === uniqueBases.length - 1
+                const label = !isMobile ? 'Base' : isLast ? 'E' : `R${i + 1}`
+                const color = isLast ? '#8b5cf6' : '#e67e22'
+                return (
+                  <MissionMarkerSvg
+                    key={`marker-base-${i}`}
+                    sx={sx} sy={sy} r={6 * px}
+                    strokeWidth={1.5 * px}
+                    label={label} color={color}
+                  />
+                )
+              })}
+            </>
+          )
+        })()}
 
         {basePoint && (() => {
           const [sx, sy] = mToSVG(basePoint[0], basePoint[1])
@@ -532,7 +688,7 @@ export default function PolygonCanvas({
           )
         })()}
 
-        {previewPoints?.length >= 3 && (
+        {previewPoints?.length >= 3 && !isUgvRoute && (
           <polygon
             points={toPoints(previewPoints)}
             fill={drawColor}
@@ -556,7 +712,7 @@ export default function PolygonCanvas({
             points={previewPoints}
             px={px}
             color={drawColor}
-            closed={previewPoints.length >= 3}
+            closed={previewPoints.length >= 3 && !isUgvRoute}
             toSvg={mToSVG}
           />
         )}
@@ -570,12 +726,39 @@ export default function PolygonCanvas({
               cx={sx}
               cy={sy}
               r={5 * px}
-              fill="#ffffff"
-              stroke={drawColor}
+              fill={isUgvRoute ? UGV_COLOR : '#ffffff'}
+              stroke={isUgvRoute ? '#ffffff' : drawColor}
               strokeWidth={2 * px}
             />
           )
         })}
+
+        {ugvRoute?.length >= 2 && !isUgvRoute && (
+          <>
+            <polyline
+              points={ugvRoute.map(([x, y]) => mToSVG(x, y).join(',')).join(' ')}
+              fill="none"
+              stroke={UGV_COLOR}
+              strokeWidth={2.5 * px}
+              strokeDasharray={`${6 * px} ${3 * px}`}
+              strokeLinecap="round"
+            />
+            {ugvRoute.map(([x, y], i) => {
+              const [sx, sy] = mToSVG(x, y)
+              return (
+                <circle
+                  key={i}
+                  cx={sx}
+                  cy={sy}
+                  r={5 * px}
+                  fill={UGV_COLOR}
+                  stroke="#ffffff"
+                  strokeWidth={2 * px}
+                />
+              )
+            })}
+          </>
+        )}
 
         <VehicleOverlay
           renderer="svg"

@@ -104,7 +104,8 @@ class ConcaveDecomposer:
     @staticmethod
     def _validate_and_recurse(polygon: Polygon, sub_polygons: list[Polygon],
                                heading_angle_deg: float,
-                               depth: int) -> tuple[list[Polygon], bool]:
+                               depth: int,
+                               channel_width: float = 1.0) -> tuple[list[Polygon], bool]:
         """
         Filter valid sub-polygons, check for degenerate cuts,
         and recurse. Returns (result_list, success_bool).
@@ -127,7 +128,7 @@ class ConcaveDecomposer:
         for sub in valid_subs:
             sub = orient(sub, sign=1.0)
             result.extend(
-                ConcaveDecomposer.decompose(sub, heading_angle_deg, depth + 1)
+                ConcaveDecomposer.decompose(sub, heading_angle_deg, depth + 1, channel_width)
             )
         return result, True
 
@@ -313,13 +314,19 @@ class ConcaveDecomposer:
 
     @staticmethod
     def _connect_hole_to_exterior(polygon: Polygon, vertex_coords: tuple,
-                                   heading_rad: float) -> list[Polygon]:
+                                   heading_rad: float,
+                                   channel_width: float = 1.0) -> list[Polygon]:
         """
         Connects an interior ring (obstacle) to the exterior boundary
         by erasing a thin channel along the heading direction.
 
         The resulting polygon has one fewer hole (absorbed into the
         exterior as a concavity) which recursion will decompose.
+
+        channel_width is the TOTAL width of the erased corridor in meters.
+        Should be set to the spray swath width so the corridor is never
+        narrower than one swath — this prevents the boustrophedon planner
+        from generating micro-segments inside the channel.
         """
         vx, vy = vertex_coords
         hx, hy = np.cos(heading_rad), np.sin(heading_rad)
@@ -341,11 +348,14 @@ class ConcaveDecomposer:
         if hit_pt is None:
             return [polygon]
 
+        # Small extension so the boolean difference cuts cleanly through
+        # the boundary (avoids degenerate tangent-only intersections).
         ext = 0.5
         p1 = Point(vx - ext * dx, vy - ext * dy)
         p2 = Point(hit_pt.x + ext * dx, hit_pt.y + ext * dy)
 
-        channel = LineString([p1, p2]).buffer(0.5, cap_style=2)
+        channel_radius = max(channel_width / 2.0, 0.5)
+        channel = LineString([p1, p2]).buffer(channel_radius, cap_style=2)
         result = polygon.difference(channel)
 
         if isinstance(result, MultiPolygon):
@@ -360,7 +370,8 @@ class ConcaveDecomposer:
 
     @staticmethod
     def _resolve_all_holes(polygon: Polygon, heading_rad: float,
-                            max_iter: int = 100) -> Polygon | list[Polygon]:
+                            max_iter: int = 100,
+                            channel_width: float = 1.0) -> Polygon | list[Polygon]:
         """
         Iteratively connect all holes to the exterior boundary.
         Returns a Polygon (no holes) or list[Polygon] if the channel split it.
@@ -383,7 +394,7 @@ class ConcaveDecomposer:
 
                 for idx in hole_t2:
                     subs = ConcaveDecomposer._connect_hole_to_exterior(
-                        polygon, hole_coords[idx], heading_rad
+                        polygon, hole_coords[idx], heading_rad, channel_width
                     )
                     valid = [s for s in subs if s.area > 0.1]
                     if not valid:
@@ -411,7 +422,8 @@ class ConcaveDecomposer:
 
     @staticmethod
     def decompose(polygon: Polygon, heading_angle_deg: float,
-                   depth: int = 0) -> list[Polygon]:
+                   depth: int = 0,
+                   channel_width: float = 1.0) -> list[Polygon]:
         """
         Recursive main function.
         Verifies if the polygon has concavities 'Type 2' that obstruct the flight
@@ -420,6 +432,9 @@ class ConcaveDecomposer:
         :param polygon: Shapely Polygon (may contain holes/obstacles).
         :param heading_angle_deg: Flight heading in degrees.
         :param depth: Current recursion depth.
+        :param channel_width: Total width in meters of the corridor used to connect
+            interior holes to the exterior boundary. Should equal the spray swath
+            width so that the corridor is never narrower than one swath.
         :return: List of convex polygons (or safe to fly).
         """
         if depth > 25:
@@ -428,12 +443,12 @@ class ConcaveDecomposer:
         heading_rad = np.radians(heading_angle_deg)
 
         # --- Pre-step: resolve ALL holes iteratively ---
-        resolved = ConcaveDecomposer._resolve_all_holes(polygon, heading_rad)
+        resolved = ConcaveDecomposer._resolve_all_holes(polygon, heading_rad, channel_width=channel_width)
         if isinstance(resolved, list):
             result = []
             for sub in resolved:
                 sub = orient(sub, sign=1.0)
-                result.extend(ConcaveDecomposer.decompose(sub, heading_angle_deg, depth + 1))
+                result.extend(ConcaveDecomposer.decompose(sub, heading_angle_deg, depth + 1, channel_width))
             return result
         polygon = resolved
 
@@ -454,7 +469,7 @@ class ConcaveDecomposer:
                 polygon, coords[i], heading_rad
             )
             result, success = ConcaveDecomposer._validate_and_recurse(
-                polygon, sub_polygons, heading_angle_deg, depth
+                polygon, sub_polygons, heading_angle_deg, depth, channel_width
             )
             if success:
                 return result

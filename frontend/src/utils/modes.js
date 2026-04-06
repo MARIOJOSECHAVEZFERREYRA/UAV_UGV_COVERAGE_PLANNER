@@ -3,4 +3,5 @@ export const MODE = Object.freeze({
   DRAW_POLYGON:    'draw_polygon',
   DRAW_OBSTACLE:   'draw_obstacle',
   SET_BASE_POINT:  'set_base_point',
+  DRAW_UGV_ROUTE:  'draw_ugv_route',
 })

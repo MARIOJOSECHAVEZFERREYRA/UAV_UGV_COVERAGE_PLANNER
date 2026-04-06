@@ -11,6 +11,11 @@ export function useMissionState() {
     setHighlight('all')
   }, [])
 
+  // Closes the simulation badge without clearing waypoints from the map.
+  const dismissSimulation = useCallback(() => {
+    setActiveMission(null)
+  }, [])
+
   const handleMissionReady = useCallback((mission, wps) => {
     setWaypoints(wps ?? [])
     setActiveMission(mission)
@@ -23,6 +28,7 @@ export function useMissionState() {
     highlight,
     setHighlight,
     resetMission,
+    dismissSimulation,
     handleMissionReady,
   }
 }

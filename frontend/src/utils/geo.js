@@ -105,6 +105,11 @@ export function wouldSelfIntersect(pts, newPt) {
  *
  * Runs share their endpoint with the adjacent run so lines connect visually.
  */
+/**
+ * Groups waypoints into typed runs. Each run is { points: [{x,y},...], cycleIndex: number }.
+ * Sweep and deadhead runs carry their cycle index so the renderer can apply per-cycle colors.
+ * Ferry runs also carry the cycle index but renderers may ignore it (ferry uses a fixed color).
+ */
 export function waypointsByType(waypoints) {
   const sweepRuns = []
   const ferryRuns = []
@@ -115,70 +120,81 @@ export function waypointsByType(waypoints) {
   let ferryBuf = null
   let deadheadBuf = null
 
+  const flush = (buf, list, pt) => {
+    if (!buf) return
+    if (pt !== undefined) buf.points.push(pt)
+    if (buf.points.length >= 1) list.push(buf)
+  }
+
   for (const wp of waypoints ?? []) {
     const pt = { x: wp.x, y: wp.y }
+    const ci = wp.cycle_index ?? 0
 
     if (wp.waypoint_type === 'base') {
-      if (sweepBuf?.length) {
-        sweepRuns.push(sweepBuf)
-        sweepBuf = null
-      }
-      if (ferryBuf?.length) {
-        ferryRuns.push(ferryBuf)
-        ferryBuf = null
-      }
-      if (deadheadBuf?.length) {
-        deadheadRuns.push(deadheadBuf)
-        deadheadBuf = null
-      }
+      flush(sweepBuf, sweepRuns); sweepBuf = null
+      flush(ferryBuf, ferryRuns); ferryBuf = null
+      flush(deadheadBuf, deadheadRuns); deadheadBuf = null
       basePoints.push(pt)
     } else if (wp.waypoint_type === 'sweep') {
-      if (ferryBuf?.length) {
-        ferryBuf.push(pt)
-        ferryRuns.push(ferryBuf)
-        ferryBuf = null
-      }
-      if (deadheadBuf?.length) {
-        deadheadBuf.push(pt)
-        deadheadRuns.push(deadheadBuf)
-        deadheadBuf = null
-      }
-      if (!sweepBuf) sweepBuf = [pt]
-      else sweepBuf.push(pt)
+      flush(ferryBuf, ferryRuns, pt); ferryBuf = null
+      flush(deadheadBuf, deadheadRuns, pt); deadheadBuf = null
+      if (!sweepBuf) sweepBuf = { points: [pt], cycleIndex: ci }
+      else sweepBuf.points.push(pt)
     } else if (wp.waypoint_type === 'ferry') {
-      if (sweepBuf?.length) {
-        sweepBuf.push(pt)
-        sweepRuns.push(sweepBuf)
-        sweepBuf = null
-      }
-      if (deadheadBuf?.length) {
-        deadheadBuf.push(pt)
-        deadheadRuns.push(deadheadBuf)
-        deadheadBuf = null
-      }
-      if (!ferryBuf) ferryBuf = [pt]
-      else ferryBuf.push(pt)
+      flush(sweepBuf, sweepRuns, pt); sweepBuf = null
+      flush(deadheadBuf, deadheadRuns, pt); deadheadBuf = null
+      if (!ferryBuf) ferryBuf = { points: [pt], cycleIndex: ci }
+      else ferryBuf.points.push(pt)
     } else if (wp.waypoint_type === 'deadhead') {
-      if (sweepBuf?.length) {
-        sweepBuf.push(pt)
-        sweepRuns.push(sweepBuf)
-        sweepBuf = null
-      }
-      if (ferryBuf?.length) {
-        ferryBuf.push(pt)
-        ferryRuns.push(ferryBuf)
-        ferryBuf = null
-      }
-      if (!deadheadBuf) deadheadBuf = [pt]
-      else deadheadBuf.push(pt)
+      flush(sweepBuf, sweepRuns, pt); sweepBuf = null
+      flush(ferryBuf, ferryRuns, pt); ferryBuf = null
+      if (!deadheadBuf) deadheadBuf = { points: [pt], cycleIndex: ci }
+      else deadheadBuf.points.push(pt)
     }
   }
 
-  if (sweepBuf?.length) sweepRuns.push(sweepBuf)
-  if (ferryBuf?.length) ferryRuns.push(ferryBuf)
-  if (deadheadBuf?.length) deadheadRuns.push(deadheadBuf)
+  flush(sweepBuf, sweepRuns); sweepBuf = null
+  flush(ferryBuf, ferryRuns); ferryBuf = null
+  flush(deadheadBuf, deadheadRuns); deadheadBuf = null
 
   return { sweepRuns, ferryRuns, deadheadRuns, basePoints }
+}
+
+/** Build a GeoJSON FeatureCollection of obstacle polygons (for separate red rendering). */
+export function obstacleToGeoJSON(field) {
+  const obstacles = field?.obstacles ?? []
+  return {
+    type: 'FeatureCollection',
+    features: obstacles
+      .filter(obs => obs.length >= 3)
+      .map(obs => ({
+        type: 'Feature',
+        geometry: {
+          type: 'Polygon',
+          coordinates: [ensureClosed(obs.map(([x, y]) => xyToLngLat(x, y)))],
+        },
+        properties: {},
+      })),
+  }
+}
+
+/**
+ * Build a GeoJSON FeatureCollection with one closed LineString from a list of
+ * flat [x, y] coords (safe-zone polygon outline from backend metrics).
+ */
+export function safeZoneToGeoJSON(coords) {
+  if (!Array.isArray(coords) || coords.length < 3) {
+    return { type: 'FeatureCollection', features: [] }
+  }
+  const ring = ensureClosed(coords.map(([x, y]) => xyToLngLat(x, y)))
+  return {
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      geometry: { type: 'LineString', coordinates: ring },
+      properties: {},
+    }],
+  }
 }
 
 /** Compute the bounding box [[minLng, minLat], [maxLng, maxLat]] of a field. */

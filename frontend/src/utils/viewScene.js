@@ -1,4 +1,5 @@
 import { MODE } from './modes.js'
+import { DRAW } from './colors.js'
 
 export const EMPTY_FC = {
   type: 'FeatureCollection',
@@ -51,10 +52,12 @@ export function getTrajectoryOpacity(highlight) {
 }
 
 export function getDrawColor(drawMode) {
-  return drawMode === MODE.DRAW_OBSTACLE ? '#ef4444' : '#38BDF8'
+  if (drawMode === MODE.DRAW_OBSTACLE) return DRAW.obstacle
+  if (drawMode === MODE.DRAW_UGV_ROUTE) return DRAW.ugv
+  return DRAW.field
 }
 
-export function getEdgeLabelGroups(field, previewPoints) {
+export function getEdgeLabelGroups(field, previewPoints, previewIsOpen = false) {
   const groups = []
 
   if (field?.coordinates?.length >= 2) {
@@ -70,28 +73,37 @@ export function getEdgeLabelGroups(field, previewPoints) {
   if (previewPoints?.length >= 2) {
     groups.push({
       points: previewPoints,
-      closed: isClosedPreview(previewPoints),
+      closed: previewIsOpen ? false : isClosedPreview(previewPoints),
     })
   }
 
   return groups
 }
 
-export function toLineFeatureCollection(runs, pointToCoordinates) {
+export function toLineFeatureCollection(runs, pointToCoordinates, getColor = null) {
   if (!Array.isArray(runs) || runs.length === 0) {
     return EMPTY_FC
   }
 
   const features = runs
-    .filter(run => Array.isArray(run) && run.length >= 2)
-    .map(run => ({
-      type: 'Feature',
-      geometry: {
-        type: 'LineString',
-        coordinates: run.map(pointToCoordinates),
-      },
-      properties: {},
-    }))
+    .filter(run => {
+      const pts = run.points ?? run
+      return Array.isArray(pts) && pts.length >= 2
+    })
+    .map(run => {
+      const pts = run.points ?? run
+      const props = {}
+      if (getColor) props.color = getColor(run)
+      if (typeof run.cycleIndex === 'number') props.cycleIndex = run.cycleIndex
+      return {
+        type: 'Feature',
+        geometry: {
+          type: 'LineString',
+          coordinates: pts.map(pointToCoordinates),
+        },
+        properties: props,
+      }
+    })
 
   return {
     type: 'FeatureCollection',
@@ -106,13 +118,13 @@ export function toPointFeatureCollection(points, pointToCoordinates) {
 
   return {
     type: 'FeatureCollection',
-    features: points.map(point => ({
+    features: points.map((point, index) => ({
       type: 'Feature',
       geometry: {
         type: 'Point',
         coordinates: pointToCoordinates(point),
       },
-      properties: {},
+      properties: { index },
     })),
   }
 }

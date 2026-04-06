@@ -36,6 +36,7 @@ class Mission(Base):
     spray_width: Mapped[float] = mapped_column(Float, default=5.0)
     strategy: Mapped[str] = mapped_column(String(32), default="genetic")
     drone_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    overrides_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Result
     best_angle: Mapped[float | None] = mapped_column(Float, nullable=True)

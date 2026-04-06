@@ -20,41 +20,39 @@ class MissionAnalyzer:
         flow_l_min: effective flow rate in L/min used during the mission.
                     Defaults to drone.spray_flow_rate_lpm if not provided.
         """
-        total_dist = 0
-        spray_dist = 0
-        deadhead_dist = 0
+        total_dist = 0.0
+        spray_dist = 0.0
+        deadhead_dist = 0.0
+        flight_time_sec = 0.0
 
         for c in cycles:
-            segments = c.get('segments', [])
-            if segments:
-                for s in segments:
-                    d = np.linalg.norm(np.array(s['p1'][:2]) - np.array(s['p2'][:2]))
-                    total_dist += d
-                    if s['spraying']:
-                        spray_dist += d
-                    else:
-                        deadhead_dist += d
-            else:
-                path = c.get('path', [])
-                for i in range(len(path) - 1):
-                    total_dist += np.linalg.norm(np.array(path[i][:2]) - np.array(path[i + 1][:2]))
+            for s in c['segments']:
+                d = float(np.linalg.norm(np.array(s['p1'][:2]) - np.array(s['p2'][:2])))
+                total_dist += d
+                seg_type = s.get('segment_type', 'ferry')
+                if seg_type == 'sweep':
+                    spray_dist += d
+                    # Sweeps vuelan a velocidad de aspersion
+                    flight_time_sec += d / drone.speed_cruise_ms
+                else:
+                    deadhead_dist += d
+                    # Ferries y deadheads vuelan a velocidad maxima
+                    flight_time_sec += d / drone.speed_max_ms
 
         area_m2 = polygon.area
         area_ha = area_m2 / 10000.0
 
-        work_speed_ms = drone.speed_cruise_ms
-        flight_time_sec = total_dist / work_speed_ms
         flight_time_min = flight_time_sec / 60.0
 
         reload_time_min = len(cycles) * 5.0
         total_op_time_min = flight_time_min + reload_time_min
 
-        prod_ha_hr = 0
+        prod_ha_hr = 0.0
         if total_op_time_min > 0:
             prod_ha_hr = area_ha / (total_op_time_min / 60.0)
 
         effective_flow = flow_l_min if flow_l_min is not None else drone.spray_flow_rate_lpm
-        spray_time_min = (spray_dist / work_speed_ms) / 60.0
+        spray_time_min = (spray_dist / drone.speed_cruise_ms) / 60.0
         total_vol_l = spray_time_min * effective_flow
 
         real_dosage = 0
@@ -101,17 +99,11 @@ class MissionAnalyzer:
         for i, cycle in enumerate(mobile_cycles):
             stop_type = "Start" if i == 0 else "Stop {}".format(i)
 
-            segments = cycle.get('segments', [])
             spray_dist_m = 0
-            if segments:
-                for s in segments:
-                    if s['spraying']:
-                        d = np.linalg.norm(np.array(s['p1'][:2]) - np.array(s['p2'][:2]))
-                        spray_dist_m += d
-            else:
-                path = cycle['path']
-                for j in range(len(path) - 1):
-                    spray_dist_m += np.linalg.norm(np.array(path[j][:2]) - np.array(path[j + 1][:2]))
+            for s in cycle['segments']:
+                if s['spraying']:
+                    d = np.linalg.norm(np.array(s['p1'][:2]) - np.array(s['p2'][:2]))
+                    spray_dist_m += d
 
             spray_time_min = (spray_dist_m / work_speed_ms) / 60.0
             liters_consumed = spray_time_min * effective_flow

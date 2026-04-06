@@ -1,3 +1,5 @@
+import { C, TRAJ } from '../utils/colors.js'
+
 export default function LayerToggle({ highlight, onHighlight }) {
   function renderButton(label, keyName, color) {
     const isActive = highlight === keyName
@@ -18,10 +20,10 @@ export default function LayerToggle({ highlight, onHighlight }) {
           fontSize: 12,
           fontFamily: 'inherit',
           cursor: 'pointer',
-          border: `1px solid ${isActive ? color : '#374151'}`,
+          border: `1px solid ${isActive ? color : C.border}`,
           borderRadius: 5,
-          background: isActive ? color + '28' : '#1f2937',
-          color: isActive ? color : '#94a3b8',
+          background: isActive ? `${color}28` : C.surface,
+          color: isActive ? color : C.muted,
           fontWeight: isActive ? 600 : 400,
           transition: 'all 0.15s',
         }}
@@ -35,21 +37,22 @@ export default function LayerToggle({ highlight, onHighlight }) {
     <div
       style={{
         position: 'absolute',
-        bottom: 16,
-        left: 16,
+        top: 10,
+        right: 50,
         zIndex: 20,
         display: 'flex',
         gap: 6,
         alignItems: 'center',
-        background: '#0d1117cc',
+        background: `${C.bg}cc`,
         backdropFilter: 'blur(6px)',
-        border: '1px solid #21262d',
+        border: `1px solid ${C.border}`,
         borderRadius: 8,
         padding: '6px 10px',
       }}
     >
-      {renderButton('Spray', 'sweep', '#22c55e')}
-      {renderButton('Transit', 'ferry', '#f59e0b')}
+      {renderButton('Spray', 'sweep', TRAJ.sweep)}
+      {renderButton('Transit', 'ferry', TRAJ.ferry)}
+      {renderButton('Deadhead', 'deadhead', TRAJ.deadhead)}
     </div>
   )
 }

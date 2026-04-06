@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
+import { TRAJ, DRAW, CYCLE_PALETTE } from '../utils/colors.js'
 import {
   fieldToGeoJSON,
+  obstacleToGeoJSON,
+  safeZoneToGeoJSON,
   waypointsByType,
   xyToLngLat,
   fieldBounds,
@@ -20,6 +23,25 @@ import {
 } from '../utils/viewScene.js'
 import ZoomControls from './ZoomControls.jsx'
 import VehicleOverlay from './VehicleOverlay.jsx'
+
+const UGV_COLOR = DRAW.ugv
+
+function makeRvMarkerEl(label, bg = '#e67e22') {
+  const el = document.createElement('div')
+  el.style.cssText = [
+    'width:22px', 'height:22px',
+    'border-radius:50%',
+    `background:${bg}`,
+    'border:2px solid #ffffff',
+    'display:flex', 'align-items:center', 'justify-content:center',
+    'font-size:9px', 'font-weight:700', 'color:#ffffff',
+    'font-family:inherit',
+    'pointer-events:none',
+    'box-shadow:0 1px 4px rgba(0,0,0,.45)',
+  ].join(';')
+  el.textContent = label
+  return el
+}
 
 function makeLabelEl(text) {
   const el = document.createElement('div')
@@ -59,6 +81,8 @@ export default function MapView({
   previewPoints,
   waypoints,
   basePoint,
+  ugvRoute,
+  safeZone,
   vehicles,
   drawMode,
   highlight,
@@ -68,7 +92,10 @@ export default function MapView({
   const containerRef = useRef(null)
   const mapRef = useRef(null)
   const edgeLabelsRef = useRef([])
+  const rvMarkersRef = useRef([])
   const [ready, setReady] = useState(false)
+  const [hoveredCycle, setHoveredCycle] = useState(null)
+  const [selectedCycle, setSelectedCycle] = useState(null)
 
   useEffect(() => {
     if (mapRef.current) {
@@ -94,7 +121,7 @@ export default function MapView({
         type: 'fill',
         source: 'field',
         paint: {
-          'fill-color': '#38BDF8',
+          'fill-color': DRAW.field,
           'fill-opacity': 0.08,
         },
       })
@@ -103,7 +130,7 @@ export default function MapView({
         type: 'line',
         source: 'field',
         paint: {
-          'line-color': '#38BDF8',
+          'line-color': DRAW.field,
           'line-width': 2,
           'line-opacity': 0.9,
         },
@@ -115,7 +142,7 @@ export default function MapView({
         type: 'line',
         source: 'sweep-trajectory',
         paint: {
-          'line-color': '#22c55e',
+          'line-color': ['coalesce', ['get', 'color'], TRAJ.sweep],
           'line-width': 2,
           'line-opacity': 0.92,
         },
@@ -127,7 +154,7 @@ export default function MapView({
         type: 'line',
         source: 'ferry-trajectory',
         paint: {
-          'line-color': '#f59e0b',
+          'line-color': TRAJ.ferry,
           'line-width': 1.6,
           'line-opacity': 0.85,
           'line-dasharray': [4, 3],
@@ -140,7 +167,7 @@ export default function MapView({
         type: 'line',
         source: 'deadhead-trajectory',
         paint: {
-          'line-color': '#ef4444',
+          'line-color': ['coalesce', ['get', 'color'], TRAJ.deadhead],
           'line-width': 1.6,
           'line-opacity': 0.75,
           'line-dasharray': [2, 2],
@@ -154,7 +181,7 @@ export default function MapView({
         source: 'base-markers',
         paint: {
           'circle-radius': 7,
-          'circle-color': '#ef4444',
+          'circle-color': DRAW.obstacle,
           'circle-stroke-width': 2,
           'circle-stroke-color': '#fff',
         },
@@ -167,7 +194,7 @@ export default function MapView({
         source: 'base-preview',
         paint: {
           'circle-radius': 8,
-          'circle-color': '#ef4444',
+          'circle-color': DRAW.obstacle,
           'circle-stroke-width': 2.5,
           'circle-stroke-color': '#fff',
           'circle-opacity': 0.9,
@@ -180,7 +207,7 @@ export default function MapView({
         type: 'fill',
         source: 'draw-fill',
         paint: {
-          'fill-color': '#38BDF8',
+          'fill-color': DRAW.field,
           'fill-opacity': 0.1,
         },
       })
@@ -207,7 +234,63 @@ export default function MapView({
           'circle-radius': 4,
           'circle-color': '#ffffff',
           'circle-stroke-width': 2,
-          'circle-stroke-color': '#38BDF8',
+          'circle-stroke-color': DRAW.field,
+        },
+      })
+
+      // UGV route layers — committed route shown as orange dashed line + dots
+      map.addSource('ugv-route', { type: 'geojson', data: EMPTY_FC })
+      map.addLayer({
+        id: 'ugv-route',
+        type: 'line',
+        source: 'ugv-route',
+        paint: {
+          'line-color': UGV_COLOR,
+          'line-width': 2.5,
+          'line-opacity': 0.9,
+          'line-dasharray': [6, 3],
+        },
+      })
+
+      map.addSource('ugv-waypoints', { type: 'geojson', data: EMPTY_FC })
+      map.addLayer({
+        id: 'ugv-waypoints',
+        type: 'circle',
+        source: 'ugv-waypoints',
+        paint: {
+          'circle-radius': 5,
+          'circle-color': UGV_COLOR,
+          'circle-stroke-width': 2,
+          'circle-stroke-color': '#ffffff',
+        },
+      })
+
+      // Obstacle layers — separate red fill/border (not just holes in field-fill)
+      map.addSource('obstacles', { type: 'geojson', data: EMPTY_FC })
+      map.addLayer({
+        id: 'obstacle-fill',
+        type: 'fill',
+        source: 'obstacles',
+        paint: { 'fill-color': DRAW.obstacle, 'fill-opacity': 0.15 },
+      })
+      map.addLayer({
+        id: 'obstacle-border',
+        type: 'line',
+        source: 'obstacles',
+        paint: { 'line-color': DRAW.obstacle, 'line-width': 1.5, 'line-opacity': 0.9 },
+      })
+
+      // Safe zone boundary — dashed red outline showing spray margin
+      map.addSource('safe-zone', { type: 'geojson', data: EMPTY_FC })
+      map.addLayer({
+        id: 'safe-zone',
+        type: 'line',
+        source: 'safe-zone',
+        paint: {
+          'line-color': '#ef4444',
+          'line-width': 1.5,
+          'line-opacity': 0.65,
+          'line-dasharray': [4, 3],
         },
       })
 
@@ -217,6 +300,8 @@ export default function MapView({
     return () => {
       edgeLabelsRef.current.forEach(marker => marker.remove())
       edgeLabelsRef.current = []
+      rvMarkersRef.current.forEach(marker => marker.remove())
+      rvMarkersRef.current = []
       map.remove()
       mapRef.current = null
     }
@@ -257,10 +342,12 @@ export default function MapView({
 
     if (!field) {
       map.getSource('field').setData(EMPTY_FC)
+      map.getSource('obstacles').setData(EMPTY_FC)
       return
     }
 
     map.getSource('field').setData(fieldToGeoJSON(field))
+    map.getSource('obstacles').setData(obstacleToGeoJSON(field))
 
     const [[minLng, minLat], [maxLng, maxLat]] = fieldBounds(field)
     map.fitBounds([[minLng, minLat], [maxLng, maxLat]], {
@@ -277,8 +364,10 @@ export default function MapView({
     const map = mapRef.current
     const { sweepRuns, ferryRuns, deadheadRuns, basePoints } = waypointsByType(waypoints)
 
+    const cycleColor = run => CYCLE_PALETTE[(run.cycleIndex ?? 0) % CYCLE_PALETTE.length]
+
     map.getSource('sweep-trajectory').setData(
-      toLineFeatureCollection(sweepRuns, objectPointToLngLat)
+      toLineFeatureCollection(sweepRuns, objectPointToLngLat, cycleColor)
     )
 
     map.getSource('ferry-trajectory').setData(
@@ -286,13 +375,90 @@ export default function MapView({
     )
 
     map.getSource('deadhead-trajectory').setData(
-      toLineFeatureCollection(deadheadRuns, objectPointToLngLat)
+      toLineFeatureCollection(deadheadRuns, objectPointToLngLat, cycleColor)
     )
 
     map.getSource('base-markers').setData(
       toPointFeatureCollection(basePoints, objectPointToLngLat)
     )
+
+    // Mission markers: S (start), R1…Rn (rendezvous), E (end), Base (static)
+    rvMarkersRef.current.forEach(m => m.remove())
+    rvMarkersRef.current = []
+
+    // "S" — first non-base waypoint = UAV start position
+    const firstWp = waypoints?.find(wp => wp.waypoint_type !== 'base')
+    if (firstWp) {
+      const el = makeRvMarkerEl('S', '#27ae60')
+      const [lng, lat] = xyToLngLat(firstWp.x, firstWp.y)
+      rvMarkersRef.current.push(
+        new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat([lng, lat]).addTo(map)
+      )
+    }
+
+    // Deduplicate base points to find unique rendezvous / end positions.
+    // Mobile missions have distinct locations; static collapse to one point.
+    const seen = new Set()
+    const uniqueBases = basePoints.filter(pt => {
+      const key = `${pt.x.toFixed(1)},${pt.y.toFixed(1)}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+
+    const isMobile = uniqueBases.length > 1
+    uniqueBases.forEach((pt, i) => {
+      const isLast = i === uniqueBases.length - 1
+      // Mobile: intermediate stops are R1, R2…; last position is E
+      // Static: single fixed base labelled "Base"
+      const label = !isMobile ? 'Base' : isLast ? 'E' : `R${i + 1}`
+      const color = isLast ? '#8b5cf6' : '#e67e22'
+      const el = makeRvMarkerEl(label, color)
+      const [lng, lat] = xyToLngLat(pt.x, pt.y)
+      rvMarkersRef.current.push(
+        new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat([lng, lat]).addTo(map)
+      )
+    })
   }, [ready, waypoints])
+
+  // Cycle hover / click interaction on trajectory layers
+  useEffect(() => {
+    if (!ready) return
+    const map = mapRef.current
+    const trajLayers = ['sweep-trajectory', 'deadhead-trajectory']
+
+    const onEnter = (e) => {
+      const ci = e.features?.[0]?.properties?.cycleIndex ?? null
+      setHoveredCycle(ci)
+      map.getCanvas().style.cursor = 'pointer'
+    }
+    const onLeave = () => {
+      setHoveredCycle(null)
+      map.getCanvas().style.cursor = ''
+    }
+    const onClickLayer = (e) => {
+      const ci = e.features?.[0]?.properties?.cycleIndex ?? null
+      setSelectedCycle(prev => prev === ci ? null : ci)
+      e.originalEvent.stopPropagation()
+    }
+    const onClickMap = () => setSelectedCycle(null)
+
+    for (const layer of trajLayers) {
+      map.on('mousemove', layer, onEnter)
+      map.on('mouseleave', layer, onLeave)
+      map.on('click', layer, onClickLayer)
+    }
+    map.on('click', onClickMap)
+
+    return () => {
+      for (const layer of trajLayers) {
+        map.off('mousemove', layer, onEnter)
+        map.off('mouseleave', layer, onLeave)
+        map.off('click', layer, onClickLayer)
+      }
+      map.off('click', onClickMap)
+    }
+  }, [ready])
 
   useEffect(() => {
     if (!ready) {
@@ -312,17 +478,25 @@ export default function MapView({
   }, [ready, basePoint])
 
   useEffect(() => {
-    if (!ready) {
-      return
-    }
+    if (!ready) return
+    const data = highlight === 'ferry' ? safeZoneToGeoJSON(safeZone) : EMPTY_FC
+    mapRef.current.getSource('safe-zone').setData(data)
+  }, [ready, safeZone, highlight])
 
+  useEffect(() => {
+    if (!ready) return
     const map = mapRef.current
     const { sweepOpacity, ferryOpacity, deadheadOpacity } = getTrajectoryOpacity(highlight)
+    const activeCycle = selectedCycle ?? hoveredCycle
 
-    map.setPaintProperty('sweep-trajectory', 'line-opacity', sweepOpacity)
+    const cycleExpr = (base) => activeCycle !== null
+      ? ['case', ['==', ['get', 'cycleIndex'], activeCycle], base, 0.08]
+      : base
+
+    map.setPaintProperty('sweep-trajectory', 'line-opacity', cycleExpr(sweepOpacity))
     map.setPaintProperty('ferry-trajectory', 'line-opacity', ferryOpacity)
-    map.setPaintProperty('deadhead-trajectory', 'line-opacity', deadheadOpacity)
-  }, [ready, highlight])
+    map.setPaintProperty('deadhead-trajectory', 'line-opacity', cycleExpr(deadheadOpacity))
+  }, [ready, highlight, hoveredCycle, selectedCycle])
 
   useEffect(() => {
     if (!ready) {
@@ -331,6 +505,30 @@ export default function MapView({
 
     const map = mapRef.current
     const points = previewPoints ?? []
+    const isUgvRoute = drawMode === MODE.DRAW_UGV_ROUTE
+
+    if (isUgvRoute) {
+      // UGV route preview: render directly on the committed orange layers so
+      // the color is correct and nothing changes visually when Finish is clicked.
+      if (points.length >= 2) {
+        map.getSource('ugv-route').setData(
+          toLineFeatureCollection([points], arrayPointToLngLat)
+        )
+        map.getSource('ugv-waypoints').setData(
+          toPointFeatureCollection(points, arrayPointToLngLat)
+        )
+      } else {
+        map.getSource('ugv-route').setData(EMPTY_FC)
+        map.getSource('ugv-waypoints').setData(EMPTY_FC)
+      }
+      // Keep draw-* layers clear during UGV drawing
+      map.getSource('draw-lines').setData(EMPTY_FC)
+      map.getSource('draw-fill').setData(EMPTY_FC)
+      map.getSource('draw-dots').setData(EMPTY_FC)
+      return
+    }
+
+    // Normal polygon / obstacle drawing preview
     const previewLinePoints = getPreviewLinePoints(points)
 
     if (previewLinePoints.length >= 2) {
@@ -357,7 +555,29 @@ export default function MapView({
     map.getSource('draw-dots').setData(
       toPointFeatureCollection(points, arrayPointToLngLat)
     )
-  }, [ready, previewPoints])
+  }, [ready, previewPoints, drawMode])
+
+  useEffect(() => {
+    if (!ready) return
+    // While drawing, the preview effect owns ugv-route/ugv-waypoints.
+    // Only take over once drawing is finished.
+    if (drawMode === MODE.DRAW_UGV_ROUTE) return
+
+    const map = mapRef.current
+
+    if (!ugvRoute || ugvRoute.length < 2) {
+      map.getSource('ugv-route').setData(EMPTY_FC)
+      map.getSource('ugv-waypoints').setData(EMPTY_FC)
+      return
+    }
+
+    map.getSource('ugv-route').setData(
+      toLineFeatureCollection([ugvRoute], arrayPointToLngLat)
+    )
+    map.getSource('ugv-waypoints').setData(
+      toPointFeatureCollection(ugvRoute, arrayPointToLngLat)
+    )
+  }, [ready, ugvRoute, drawMode])
 
   useEffect(() => {
     if (!ready) {
@@ -367,7 +587,7 @@ export default function MapView({
     edgeLabelsRef.current.forEach(marker => marker.remove())
     edgeLabelsRef.current = []
 
-    const groups = getEdgeLabelGroups(field, previewPoints)
+    const groups = getEdgeLabelGroups(field, previewPoints, drawMode === MODE.DRAW_UGV_ROUTE)
 
     for (const group of groups) {
       for (const segment of getEdgeSegments(group.points, group.closed)) {
@@ -381,7 +601,7 @@ export default function MapView({
         edgeLabelsRef.current.push(marker)
       }
     }
-  }, [ready, field, previewPoints])
+  }, [ready, field, previewPoints, drawMode])
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>

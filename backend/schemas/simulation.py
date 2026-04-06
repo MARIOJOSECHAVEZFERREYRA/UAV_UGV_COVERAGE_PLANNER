@@ -36,4 +36,3 @@ class SimulationFrame(BaseModel):
 
 class SimulationConfig(BaseModel):
     playback_speed: float = 1.0
-    ugv_mode: str = "static"

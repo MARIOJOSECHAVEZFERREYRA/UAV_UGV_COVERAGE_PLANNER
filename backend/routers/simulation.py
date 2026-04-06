@@ -55,7 +55,7 @@ async def simulation_ws(
         await ws.close(code=1011)
         return
 
-    # Load the work polygon from field_geojson
+    # Load field data from stored JSON
     try:
         from shapely.geometry import Polygon
         field = json.loads(mission.field_geojson)
@@ -65,12 +65,32 @@ async def simulation_ws(
         await ws.close(code=1011)
         return
 
-    # Build routes
+    # Detect mobile rendezvous mission from stored field data
+    raw_ugv = field.get("ugv_polyline")
+    is_mobile = raw_ugv is not None and len(raw_ugv) >= 2
+
+    ugv_speed     = float(field.get("ugv_speed",     2.0))
+    ugv_t_service = float(field.get("ugv_t_service", 300.0))
+
+    # Build UAV route — for mobile missions pass ugv_t_service so that the
+    # service dwell durations match the planning intervals used by segment_path_mobile.
     uav_builder = UAVRouteBuilder(drone, work_polygon)
-    uav_route = uav_builder.build(mission_cycles)
+    uav_route = uav_builder.build(
+        mission_cycles,
+        service_duration_s=ugv_t_service if is_mobile else None,
+    )
 
     ugv_builder = UGVRouteBuilder()
-    ugv_route = ugv_builder.build_static(mission_cycles, uav_route.total_duration_s)
+    if is_mobile:
+        ugv_route = ugv_builder.build_mobile(
+            mission_cycles=mission_cycles,
+            uav_route=uav_route,
+            ugv_polyline=raw_ugv,
+            ugv_speed=ugv_speed,
+            ugv_t_service=ugv_t_service,
+        )
+    else:
+        ugv_route = ugv_builder.build_static(mission_cycles, uav_route.total_duration_s)
 
     await ws.accept()
 

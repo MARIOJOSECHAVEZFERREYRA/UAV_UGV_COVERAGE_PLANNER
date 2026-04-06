@@ -1,20 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ensureClosed } from '../utils/geo'
 import { MODE } from '../utils/modes'
-
-const C = {
-  bg:       '#0d1117',
-  surface:  '#161b22',
-  border:   '#21262d',
-  accent:   '#58a6ff',
-  accentDim:'#1f6feb',
-  text:     '#e6edf3',
-  muted:    '#8b949e',
-  success:  '#3fb950',
-  warning:  '#d29922',
-  error:    '#f85149',
-  danger:   '#da3633',
-}
+import { C } from '../utils/colors'
 
 const STATUS_COLOR = {
   pending:   C.warning,
@@ -68,7 +55,7 @@ const s = {
     padding: '2px 9px', borderRadius: 20, fontSize: 11, fontWeight: 600,
   },
   errorBox: {
-    background: '#f8514912', border: `1px solid ${C.error}`,
+    background: `${C.error}12`, border: `1px solid ${C.error}`,
     borderRadius: 6, padding: '8px 10px', fontSize: 11, color: '#ffa198',
   },
 }
@@ -77,10 +64,10 @@ function Btn({ children, onClick, variant = 'default', active = false, disabled 
   const variants = {
     default:  { bg: C.surface,   border: C.border,    color: C.text },
     primary:  { bg: C.accentDim, border: C.accent,    color: '#ffffff' },
-    success:  { bg: '#1a3a1a',   border: '#238636',   color: C.success },
-    danger:   { bg: '#3d0f0f',   border: C.danger,    color: '#ff7b72' },
-    active:   { bg: '#1f4e79',   border: C.accent,    color: C.accent },
-    warning:  { bg: '#3d2a00',   border: '#bb8009',   color: '#e3b341' },
+    success:  { bg: `${C.success}18`, border: `${C.success}80`, color: C.success },
+    danger:   { bg: `${C.danger}25`,  border: C.danger,         color: '#ff7b72' },
+    active:   { bg: `${C.accent}28`,  border: C.accent,         color: C.accent },
+    warning:  { bg: `${C.warning}28`, border: `${C.warning}90`, color: '#e3b341' },
   }
   const v = active ? variants.active : variants[variant]
   return (
@@ -120,9 +107,8 @@ function HeaderSection() {
   return (
     <div style={s.header}>
       <div style={s.logo}>
-        <span style={s.logoText}>UAV-UAG Planner</span>
+        <span style={s.logoText}>UAV-UAG Mission Planner</span>
       </div>
-      <div style={s.subtitle}>UAV-UAG Mission Planning Tool</div>
     </div>
   )
 }
@@ -162,14 +148,13 @@ function AircraftSection({ drones, drone, onDroneChange, onViewSpecs }) {
 }
 
 function FieldSection({
-  mode, activeField, drawingPtsCount, basePoint,
-  onToggleDrawPolygon, onToggleDrawObstacle, onToggleSetBasePoint,
+  mode, activeField, drawingPtsCount,
+  onToggleDrawPolygon, onToggleDrawObstacle,
   onLoadField, onClear,
 }) {
   const fileRef = useRef(null)
   const isDrawingPolygon  = mode === MODE.DRAW_POLYGON
   const isDrawingObstacle = mode === MODE.DRAW_OBSTACLE
-  const isSettingBase     = mode === MODE.SET_BASE_POINT
   const hasField          = !!activeField
 
   function handleLoadJSON(e) {
@@ -194,9 +179,7 @@ function FieldSection({
           active={isDrawingPolygon}
           onClick={onToggleDrawPolygon}
         >
-          {isDrawingPolygon
-            ? `Finish (${drawingPtsCount} pts)`
-            : 'Draw Field'}
+          {isDrawingPolygon ? `Finish (${drawingPtsCount} pts)` : 'Draw Field'}
         </Btn>
         <Btn
           variant={isDrawingObstacle ? 'warning' : 'default'}
@@ -208,27 +191,9 @@ function FieldSection({
         </Btn>
       </div>
 
-      <Btn
-        variant={isSettingBase ? 'active' : 'default'}
-        active={isSettingBase}
-        onClick={onToggleSetBasePoint}
-      >
-        {isSettingBase ? 'Click on map...' : basePoint ? 'Move Base Point' : 'Set Base Point'}
-      </Btn>
-
-      {basePoint && (
-        <div style={{ fontSize: 11, color: C.muted }}>
-          Base: ({basePoint[0].toFixed(1)}, {basePoint[1].toFixed(1)})
-        </div>
-      )}
-
       <div style={s.btnRow}>
-        <Btn variant='default' onClick={() => fileRef.current.click()}>
-          Load JSON
-        </Btn>
-        <Btn variant='danger' disabled={!hasField && mode === MODE.NONE} onClick={onClear}>
-          Clear All
-        </Btn>
+        <Btn variant='default' onClick={() => fileRef.current.click()}>Load JSON</Btn>
+        <Btn variant='danger' disabled={!hasField && mode === MODE.NONE} onClick={onClear}>Clear All</Btn>
       </div>
 
       <input ref={fileRef} type="file" accept=".json" style={{ display: 'none' }} onChange={handleLoadJSON} />
@@ -243,27 +208,212 @@ function FieldSection({
   )
 }
 
-function ParametersSection({ missionName, setName, sprayWidth, setSprayWidth, swathRange, strategy, setStrategy }) {
+const MISSION_TYPES = [
+  {
+    value: 'static',
+    label: 'Static Base',
+    description: 'UAV returns to a fixed base station to recharge and refill.',
+  },
+  {
+    value: 'mobile',
+    label: 'Mobile UGV',
+    description: 'UGV moves along a route; UAV meets it at rendezvous points.',
+  },
+]
+
+function GroundSection({
+  missionType, onMissionTypeChange,
+  mode, basePoint, onToggleSetBasePoint,
+  ugvRoute, drawingPtsCount, drawingLengthM,
+  ugvSpeed, setUgvSpeed, ugvTService, setUgvTService,
+  onToggleDrawUgvRoute,
+}) {
+  const isSettingBase = mode === MODE.SET_BASE_POINT
+  const isDrawingUgv  = mode === MODE.DRAW_UGV_ROUTE
+  const hasRoute      = ugvRoute && ugvRoute.length >= 2
+
+  const routeLengthM = hasRoute
+    ? ugvRoute.slice(1).reduce((acc, pt, i) => acc + Math.hypot(pt[0] - ugvRoute[i][0], pt[1] - ugvRoute[i][1]), 0)
+    : 0
+  const fmtM = m => m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${m.toFixed(0)} m`
+
+  const isMobile = missionType === 'mobile'
+  const typeInfo  = MISSION_TYPES.find(t => t.value === missionType)
+
+  return (
+    <div style={s.section}>
+      <div style={s.sectionLabel}>Ground Operations</div>
+
+      {/* Mode toggle */}
+      <div style={{
+        display: 'grid', gridTemplateColumns: '1fr 1fr',
+        borderRadius: 7, overflow: 'hidden',
+        border: `1px solid ${C.border}`,
+      }}>
+        {MISSION_TYPES.map((opt, i) => {
+          const active = missionType === opt.value
+          return (
+            <button
+              key={opt.value}
+              onClick={() => onMissionTypeChange(opt.value)}
+              style={{
+                padding: '10px 8px',
+                background: active ? C.accentDim : C.surface,
+                border: 'none',
+                borderLeft: i > 0 ? `1px solid ${C.border}` : 'none',
+                color: active ? '#fff' : C.muted,
+                fontSize: 11, fontWeight: active ? 700 : 500,
+                cursor: 'pointer', fontFamily: 'inherit',
+                transition: 'background 0.15s, color 0.15s',
+                lineHeight: 1.3,
+              }}
+            >
+              {opt.label}
+            </button>
+          )
+        })}
+      </div>
+
+      <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.5 }}>
+        {typeInfo?.description}
+      </div>
+
+      <Divider />
+
+      {/* Base / start point */}
+      <Btn
+        variant={isSettingBase ? 'active' : 'default'}
+        active={isSettingBase}
+        onClick={onToggleSetBasePoint}
+      >
+        {isSettingBase
+          ? 'Click on map…'
+          : basePoint
+            ? `Move ${isMobile ? 'UGV start' : 'base station'}`
+            : `Set ${isMobile ? 'UGV start' : 'base station'}`}
+      </Btn>
+
+      {basePoint && (
+        <div style={{ fontSize: 11, color: C.muted }}>
+          {isMobile ? 'Start' : 'Base'}: ({basePoint[0].toFixed(1)}, {basePoint[1].toFixed(1)})
+        </div>
+      )}
+
+      {/* Mobile-only UGV route controls */}
+      {isMobile && (
+        <>
+          <Divider />
+
+          <Btn
+            variant={isDrawingUgv ? 'active' : hasRoute ? 'warning' : 'default'}
+            active={isDrawingUgv}
+            onClick={onToggleDrawUgvRoute}
+          >
+            {isDrawingUgv
+              ? drawingLengthM > 0
+                ? `Finish Route (${fmtM(drawingLengthM)})`
+                : `Finish Route (${drawingPtsCount} pts)`
+              : hasRoute
+                ? `Redraw UGV Route (${fmtM(routeLengthM)})`
+                : 'Draw UGV Route'}
+          </Btn>
+
+          {hasRoute && !isDrawingUgv && (
+            <div style={{ fontSize: 11, color: C.muted }}>
+              Route: {fmtM(routeLengthM)} · {ugvRoute.length} waypoints
+            </div>
+          )}
+
+          <div style={s.btnRow}>
+            <div>
+              <div style={s.label}>UGV speed (m/s)</div>
+              <input
+                style={s.input} type="number"
+                min={0.1} max={10} step={0.1}
+                value={ugvSpeed} onChange={e => setUgvSpeed(e.target.value)}
+              />
+            </div>
+            <div>
+              <div style={s.label}>Service time (s)</div>
+              <input
+                style={s.input} type="number"
+                min={30} max={1800} step={30}
+                value={ugvTService} onChange={e => setUgvTService(e.target.value)}
+              />
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function RangeHint({ min, max, unit = '' }) {
+  if (min == null || max == null) return null
+  return (
+    <span style={{ color: C.muted, fontSize: 10 }}>
+      {min}{unit}–{max}{unit}
+    </span>
+  )
+}
+
+function ParamInput({ label, value, onChange, min, max, step = 0.5, hint }) {
+  return (
+    <div>
+      <div style={{ ...s.label, display: 'flex', justifyContent: 'space-between' }}>
+        <span>{label}</span>
+        {hint}
+      </div>
+      <input
+        style={s.input} type="number"
+        min={min} max={max} step={step}
+        value={value} onChange={e => onChange(e.target.value)}
+      />
+    </div>
+  )
+}
+
+function ParametersSection({
+  sprayWidth, setSprayWidth,
+  appRate, setAppRate,
+  speed, setSpeed,
+  margin, setMargin,
+  defaults,
+  strategy, setStrategy,
+}) {
+  const d = defaults
+
   return (
     <div style={s.section}>
       <div style={s.sectionLabel}>Mission Parameters</div>
 
-      <div>
-        <div style={s.label}>Mission name</div>
-        <input style={s.input} value={missionName} onChange={e => setName(e.target.value)} />
+      <div style={s.btnRow}>
+        <ParamInput
+          label="Spray width (m)"
+          value={sprayWidth} onChange={setSprayWidth}
+          min={d?.swath_min_m} max={d?.swath_max_m}
+          hint={<RangeHint min={d?.swath_min_m} max={d?.swath_max_m} unit=" m" />}
+        />
+        <ParamInput
+          label="App rate (L/ha)"
+          value={appRate} onChange={setAppRate}
+          min={d?.app_rate_min_l_ha} max={d?.app_rate_max_l_ha}
+          hint={<RangeHint min={d?.app_rate_min_l_ha} max={d?.app_rate_max_l_ha} />}
+        />
       </div>
 
-      <div>
-        <div style={{ ...s.label, display: 'flex', justifyContent: 'space-between' }}>
-          <span>Spray width (m)</span>
-          <span style={{ color: C.muted }}>
-            {swathRange.min} – {swathRange.max} m
-          </span>
-        </div>
-        <input
-          style={s.input} type="number"
-          min={swathRange.min} max={swathRange.max} step={0.5}
-          value={sprayWidth} onChange={e => setSprayWidth(e.target.value)}
+      <div style={s.btnRow}>
+        <ParamInput
+          label="Speed (m/s)"
+          value={speed} onChange={setSpeed}
+          min={d?.speed_min_ms} max={d?.speed_max_ms}
+          hint={<RangeHint min={d?.speed_min_ms} max={d?.speed_max_ms} unit=" m/s" />}
+        />
+        <ParamInput
+          label="Margin (m)"
+          value={margin} onChange={setMargin}
+          min={d?.margin_min_m} max={d?.margin_max_m}
+          hint={<RangeHint min={d?.margin_min_m} max={d?.margin_max_m} unit=" m" />}
         />
       </div>
 
@@ -278,7 +428,21 @@ function ParametersSection({ missionName, setName, sprayWidth, setSprayWidth, sw
   )
 }
 
+function MetricRow({ label, value }) {
+  return (
+    <div style={s.stat}>
+      <span style={s.statKey}>{label}</span>
+      <span style={s.statVal}>{value}</span>
+    </div>
+  )
+}
+
 function ResultsSection({ mission, onExport }) {
+  const metrics = (() => {
+    try { return mission.metrics_json ? JSON.parse(mission.metrics_json) : null }
+    catch { return null }
+  })()
+
   return (
     <div style={s.section}>
       <div style={s.sectionLabel}>Results</div>
@@ -297,33 +461,68 @@ function ResultsSection({ mission, onExport }) {
 
       {mission.status === 'completed' && <>
         <Divider />
-        <div style={s.stat}>
-          <span style={s.statKey}>Optimal angle</span>
-          <span style={s.statVal}>{mission.best_angle?.toFixed(1)}°</span>
-        </div>
-        <div style={s.stat}>
-          <span style={s.statKey}>Total distance</span>
-          <span style={s.statVal}>{(mission.total_distance / 1000).toFixed(2)} km</span>
-        </div>
+
+        {/* Geometry */}
+        <MetricRow
+          label="Optimal angle"
+          value={`${mission.best_angle?.toFixed(1)}°`}
+        />
         {mission.coverage_area && (
-          <div style={s.stat}>
-            <span style={s.statKey}>Coverage area</span>
-            <span style={s.statVal}>{(mission.coverage_area / 10000).toFixed(2)} ha</span>
-          </div>
+          <MetricRow
+            label="Coverage area"
+            value={`${(mission.coverage_area / 10000).toFixed(2)} ha`}
+          />
         )}
         {mission.n_cycles != null && (
-          <div style={s.stat}>
-            <span style={s.statKey}>Flight cycles</span>
-            <span style={s.statVal}>{mission.n_cycles}</span>
-          </div>
+          <MetricRow label="Flight cycles" value={mission.n_cycles} />
         )}
-        <div style={s.stat}>
-          <span style={s.statKey}>Waypoints</span>
-          <span style={s.statVal}>{mission.waypoints?.length}</span>
-        </div>
+        <MetricRow label="Waypoints" value={mission.waypoints?.length} />
+
+        {/* Mission metrics from MissionAnalyzer */}
+        {metrics && <>
+          <Divider />
+          <MetricRow
+            label="Spray distance"
+            value={`${metrics.spray_dist_km?.toFixed(3)} km`}
+          />
+          <MetricRow
+            label="Dead distance"
+            value={`${metrics.dead_dist_km?.toFixed(3)} km`}
+          />
+          <MetricRow
+            label="Efficiency"
+            value={`${metrics.efficiency_ratio?.toFixed(1)} %`}
+          />
+          <MetricRow
+            label="Flight time"
+            value={`${metrics.flight_time_min?.toFixed(1)} min`}
+          />
+          <MetricRow
+            label="Total op. time"
+            value={`${metrics.total_op_time_min?.toFixed(1)} min`}
+          />
+          <MetricRow
+            label="Productivity"
+            value={`${metrics.productivity_ha_hr?.toFixed(2)} ha/hr`}
+          />
+          <MetricRow
+            label="Applied dosage"
+            value={`${metrics.real_dosage_l_ha?.toFixed(1)} L/ha`}
+          />
+        </>}
+
+        {metrics?.rv_n_rendezvous != null && metrics.rv_n_rendezvous > 0 && <>
+          <Divider />
+          <MetricRow label="Rendezvous stops" value={metrics.rv_n_rendezvous} />
+          <MetricRow
+            label="UAV wait (total)"
+            value={`${metrics.rv_wait_min?.toFixed(1)} min`}
+          />
+        </>}
+
         <Divider />
         <Btn variant='default' onClick={onExport}>
-          Export Waypoints (JSON)
+          Export Mission
         </Btn>
       </>}
 
@@ -334,20 +533,66 @@ function ResultsSection({ mission, onExport }) {
   )
 }
 
+function ExportDialog({ onConfirm, onCancel }) {
+  const [name, setName] = useState('Mission')
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1000,
+      background: 'rgba(0,0,0,0.55)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }}>
+      <div style={{
+        background: C.bg, border: `1px solid ${C.border}`,
+        borderRadius: 10, padding: '20px 22px', width: 300,
+        display: 'flex', flexDirection: 'column', gap: 14,
+        boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+      }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>Export Mission</div>
+        <div>
+          <div style={s.label}>File name</div>
+          <input
+            style={s.input}
+            value={name}
+            onChange={e => setName(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && name.trim() && onConfirm(name.trim())}
+            autoFocus
+          />
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Btn variant='default' onClick={onCancel}>Cancel</Btn>
+          <Btn variant='primary' disabled={!name.trim()} onClick={() => onConfirm(name.trim())}>
+            Download JSON
+          </Btn>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function MissionPanel({
-  mode, activeField, drawingPtsCount, basePoint,
+  mode, activeField, drawingPtsCount, drawingLengthM, basePoint,
+  ugvRoute,
   onToggleDrawPolygon, onToggleDrawObstacle, onToggleSetBasePoint,
+  onToggleDrawUgvRoute,
   onLoadField, onClear, onMissionReady, onViewDroneSpecs,
 }) {
   const [drones, setDrones]         = useState([])
   const [drone, setDrone]           = useState('')
-  const [swathRange, setSwathRange] = useState({ min: 1, max: 20 })
-  const [sprayWidth, setSprayWidth] = useState(10)
+  const [missionType, setMissionType] = useState('static')
+  // Mission parameter ranges (populated from /drones/{name}/defaults)
+  const [defaults, setDefaults]     = useState(null)
+  // User-editable mission parameters
+  const [sprayWidth, setSprayWidth] = useState('')
+  const [speed, setSpeed]           = useState('')
+  const [appRate, setAppRate]       = useState('')
+  const [margin, setMargin]         = useState('')
   const [strategy, setStrategy]     = useState('genetic')
-  const [missionName, setName]      = useState('Mission 1')
+  const [ugvSpeed, setUgvSpeed]     = useState(2.0)
+  const [ugvTService, setUgvTService] = useState(300)
   const [mission, setMission]       = useState(null)
   const [loading, setLoading]       = useState(false)
   const [error, setError]           = useState(null)
+  const [showExport, setShowExport] = useState(false)
   const pollRef = useRef(null)
 
   useEffect(() => () => clearInterval(pollRef.current), [])
@@ -355,25 +600,34 @@ export default function MissionPanel({
   useEffect(() => {
     fetch('/drones').then(r => r.json()).then(data => {
       setDrones(data)
-      if (data.length) {
-        setDrone(data[0].name)
-        setSwathRange({ min: data[0].min_swath, max: data[0].max_swath })
-        setSprayWidth(data[0].default_swath)
-      }
+      if (data.length) fetchAndApplyDefaults(data[0].name)
     }).catch(console.error)
   }, [])
 
-  function handleDroneChange(name) {
+  function fetchAndApplyDefaults(name) {
     setDrone(name)
-    const d = drones.find(d => d.name === name)
-    if (d) {
-      setSwathRange({ min: d.min_swath, max: d.max_swath })
-      setSprayWidth(d.default_swath)
-    }
+    fetch(`/drones/${encodeURIComponent(name)}/defaults`)
+      .then(r => r.json())
+      .then(d => {
+        setDefaults(d)
+        setSprayWidth(d.swath_m)
+        setSpeed(d.speed_ms)
+        setAppRate(d.app_rate_l_ha)
+        setMargin(d.margin_m)
+      })
+      .catch(console.error)
+  }
+
+  function handleDroneChange(name) {
+    fetchAndApplyDefaults(name)
   }
 
   async function handleCompute() {
     if (!activeField) return
+    if (!basePoint) {
+    setError('Please set a base point before computing the mission.')
+    return
+    }
     setLoading(true); setError(null); setMission(null)
     clearInterval(pollRef.current)
 
@@ -381,15 +635,30 @@ export default function MissionPanel({
       const coords = ensureClosed(activeField.coordinates)
       const obs    = (activeField.obstacles ?? []).map(ensureClosed)
 
+      const fieldPayload = {
+        coordinates: coords,
+        obstacles: obs,
+        base_point: basePoint,
+      }
+
+      if (missionType === 'mobile' && ugvRoute && ugvRoute.length >= 2) {
+        fieldPayload.ugv_polyline  = ugvRoute
+        fieldPayload.ugv_speed     = Number(ugvSpeed)
+        fieldPayload.ugv_t_service = Number(ugvTService)
+      }
+
       const res = await fetch('/mission/compute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: missionName,
-          field: { coordinates: coords, obstacles: obs, base_point: basePoint ?? null },
+          name: `Mission ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`,
+          field: fieldPayload,
           spray_width: Number(sprayWidth),
           strategy,
           drone_name: drone,
+          app_rate: Number(appRate),
+          cruise_speed_ms: Number(speed),
+          margin_m: Number(margin),
         }),
       })
       if (!res.ok) { const e = await res.json(); throw new Error(e.detail ?? res.statusText) }
@@ -412,29 +681,42 @@ export default function MissionPanel({
     }
   }
 
-  function handleExport() {
+  function handleExport(name) {
     if (!mission?.waypoints?.length) return
+    const metrics = (() => {
+      try { return mission.metrics_json ? JSON.parse(mission.metrics_json) : {} }
+      catch { return {} }
+    })()
     const data = {
-      mission_name: mission.name, drone,
+      mission_name: name, drone,
       strategy: mission.strategy,
       best_angle_deg: mission.best_angle,
+      n_cycles: mission.n_cycles,
       total_distance_m: mission.total_distance,
       coverage_area_m2: mission.coverage_area,
       spray_width_m: mission.spray_width,
+      metrics,
       waypoints: mission.waypoints.map(w => ({
         sequence: w.sequence, x: w.x, y: w.y, type: w.waypoint_type,
+        cycle_index: w.cycle_index,
       })),
     }
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
     const url  = URL.createObjectURL(blob)
     const a    = document.createElement('a')
     a.href = url
-    a.download = `${mission.name.replace(/\s+/g, '_')}.json`
-    a.click(); URL.revokeObjectURL(url)
+    a.download = `${name.replace(/\s+/g, '_')}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    setShowExport(false)
   }
 
-  const hasField   = !!activeField
-  const canCompute = hasField && !loading && mode === MODE.NONE
+  const hasField      = !!activeField
+  const hasBasePoint  = !!basePoint
+  const needsUgvRoute = missionType === 'mobile'
+  const hasUgvRoute   = ugvRoute && ugvRoute.length >= 2
+  const canCompute    = hasField && hasBasePoint && !loading && mode === MODE.NONE
+    && !(needsUgvRoute && !hasUgvRoute)
 
   return (
     <div style={s.panel}>
@@ -451,20 +733,38 @@ export default function MissionPanel({
         mode={mode}
         activeField={activeField}
         drawingPtsCount={drawingPtsCount}
-        basePoint={basePoint}
         onToggleDrawPolygon={onToggleDrawPolygon}
         onToggleDrawObstacle={onToggleDrawObstacle}
-        onToggleSetBasePoint={onToggleSetBasePoint}
         onLoadField={onLoadField}
         onClear={onClear}
       />
 
+      <GroundSection
+        missionType={missionType}
+        onMissionTypeChange={setMissionType}
+        mode={mode}
+        basePoint={basePoint}
+        onToggleSetBasePoint={onToggleSetBasePoint}
+        ugvRoute={ugvRoute}
+        drawingPtsCount={drawingPtsCount}
+        drawingLengthM={drawingLengthM}
+        ugvSpeed={ugvSpeed}
+        setUgvSpeed={setUgvSpeed}
+        ugvTService={ugvTService}
+        setUgvTService={setUgvTService}
+        onToggleDrawUgvRoute={onToggleDrawUgvRoute}
+      />
+
       <ParametersSection
-        missionName={missionName}
-        setName={setName}
         sprayWidth={sprayWidth}
         setSprayWidth={setSprayWidth}
-        swathRange={swathRange}
+        appRate={appRate}
+        setAppRate={setAppRate}
+        speed={speed}
+        setSpeed={setSpeed}
+        margin={margin}
+        setMargin={setMargin}
+        defaults={defaults}
         strategy={strategy}
         setStrategy={setStrategy}
       />
@@ -476,15 +776,37 @@ export default function MissionPanel({
             ? <><Spinner /> Computing…</>
             : 'Compute Mission'}
         </Btn>
-        {!hasField && (
+        {mode === MODE.DRAW_UGV_ROUTE && (
+          <div style={{ fontSize: 11, color: C.warning, textAlign: 'center', marginTop: 7 }}>
+            Finish the UGV route before computing
+          </div>
+        )}
+        {mode !== MODE.DRAW_UGV_ROUTE && !hasField && (
           <div style={{ fontSize: 11, color: C.muted, textAlign: 'center', marginTop: 7 }}>
             Draw or load a field to continue
+          </div>
+        )}
+        {mode !== MODE.DRAW_UGV_ROUTE && hasField && !hasBasePoint && (
+          <div style={{ fontSize: 11, color: C.warning, textAlign: 'center', marginTop: 7 }}>
+            {missionType === 'mobile' ? 'Set UGV start position before computing' : 'Set a base station before computing'}
+          </div>
+        )}
+        {mode !== MODE.DRAW_UGV_ROUTE && hasField && hasBasePoint && needsUgvRoute && !hasUgvRoute && (
+          <div style={{ fontSize: 11, color: C.warning, textAlign: 'center', marginTop: 7 }}>
+            Draw the UGV route to enable mobile rendezvous
           </div>
         )}
       </div>
 
       {mission && (
-        <ResultsSection mission={mission} onExport={handleExport} />
+        <ResultsSection mission={mission} onExport={() => setShowExport(true)} />
+      )}
+
+      {showExport && (
+        <ExportDialog
+          onConfirm={handleExport}
+          onCancel={() => setShowExport(false)}
+        />
       )}
     </div>
   )

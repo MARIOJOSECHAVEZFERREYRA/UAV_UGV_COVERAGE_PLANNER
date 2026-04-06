@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
+import { C } from './utils/colors.js'
 import MapView from './components/MapView.jsx'
 import PolygonCanvas from './components/PolygonCanvas.jsx'
 import MissionPanel from './components/MissionPanel.jsx'
@@ -24,6 +25,7 @@ export default function App() {
     highlight,
     setHighlight,
     resetMission,
+    dismissSimulation,
     handleMissionReady,
   } = useMissionState()
 
@@ -32,6 +34,7 @@ export default function App() {
     drawingPoints,
     activeField,
     basePoint,
+    ugvRoute,
     intersectionWarning,
     addPoint,
     undoPoint,
@@ -39,16 +42,37 @@ export default function App() {
     handleToggleDrawPolygon,
     handleToggleDrawObstacle,
     handleToggleSetBasePoint,
+    handleToggleDrawUgvRoute,
     handleLoadField,
     handleClear,
   } = useFieldEditor(resetMission)
 
-  const { vehicles, connected, simTimeS, playbackSpeed, setPlayback } = useSimulation(
-    activeMission?.id,
-    activeMission?.status
-  )
+  const {
+    vehicles, connected, simTimeS,
+    playbackSpeed, isPaused,
+    setPlayback, pause, resume, restart, disconnect,
+  } = useSimulation(activeMission?.id, activeMission?.status)
 
   const previewPoints = mode !== MODE.NONE ? drawingPoints : []
+
+  const safeZone = useMemo(() => {
+    if (!activeMission?.metrics_json) return null
+    try {
+      const m = JSON.parse(activeMission.metrics_json)
+      return m._safe_polygon ?? null
+    } catch { return null }
+  }, [activeMission])
+
+  const drawingLengthM = useMemo(() => {
+    if (mode !== MODE.DRAW_UGV_ROUTE || drawingPoints.length < 2) return 0
+    let total = 0
+    for (let i = 0; i < drawingPoints.length - 1; i++) {
+      const [x1, y1] = drawingPoints[i]
+      const [x2, y2] = drawingPoints[i + 1]
+      total += Math.hypot(x2 - x1, y2 - y1)
+    }
+    return total
+  }, [mode, drawingPoints])
 
   return (
     <div style={{ display: 'flex', height: '100vh', width: '100vw' }}>
@@ -66,7 +90,7 @@ export default function App() {
             position: 'absolute',
             inset: 0,
             overflow: 'hidden',
-            borderRight: '1px solid #263238',
+            borderRight: `1px solid ${C.border}`,
           }}
         >
           <div style={{ width: 360, height: '100%' }}>
@@ -74,10 +98,13 @@ export default function App() {
               mode={mode}
               activeField={activeField}
               drawingPtsCount={drawingPoints.length}
+              drawingLengthM={drawingLengthM}
               basePoint={basePoint}
+              ugvRoute={ugvRoute}
               onToggleDrawPolygon={handleToggleDrawPolygon}
               onToggleDrawObstacle={handleToggleDrawObstacle}
               onToggleSetBasePoint={handleToggleSetBasePoint}
+              onToggleDrawUgvRoute={handleToggleDrawUgvRoute}
               onLoadField={handleLoadField}
               onClear={handleClear}
               onMissionReady={handleMissionReady}
@@ -100,12 +127,12 @@ export default function App() {
             width: 14,
             height: 48,
             padding: 0,
-            background: '#161b22',
-            border: '1px solid #263238',
+            background: C.surface,
+            border: `1px solid ${C.border}`,
             borderLeft: 'none',
             borderRadius: '0 5px 5px 0',
             cursor: 'pointer',
-            color: '#8b949e',
+            color: C.muted,
             fontSize: 10,
             display: 'flex',
             alignItems: 'center',
@@ -133,9 +160,11 @@ export default function App() {
                 previewPoints={previewPoints}
                 waypoints={waypoints}
                 basePoint={basePoint}
+                ugvRoute={ugvRoute}
                 vehicles={vehicles}
                 drawMode={mode}
                 highlight={highlight}
+                safeZone={safeZone}
                 onMapClick={handleMapClick}
                 onMapRightClick={undoPoint}
               />
@@ -145,9 +174,11 @@ export default function App() {
                 previewPoints={previewPoints}
                 waypoints={waypoints}
                 basePoint={basePoint}
+                ugvRoute={ugvRoute}
                 vehicles={vehicles}
                 drawMode={mode}
                 highlight={highlight}
+                safeZone={safeZone}
                 onCanvasClick={addPoint}
                 onCanvasRightClick={undoPoint}
               />
@@ -165,7 +196,12 @@ export default function App() {
                 connected={connected}
                 simTimeS={simTimeS}
                 playbackSpeed={playbackSpeed}
+                isPaused={isPaused}
                 onPlaybackChange={setPlayback}
+                onPause={pause}
+                onResume={resume}
+                onRestart={restart}
+                onDismiss={() => { disconnect(); dismissSimulation() }}
               />
             )}
 

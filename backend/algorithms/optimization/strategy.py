@@ -1,71 +1,132 @@
 from abc import ABC, abstractmethod
 from shapely.geometry import Polygon
+
 from .sweep_angle_optimizer import SweepAngleOptimizer, build_obstacle_union
 from ..polygon.path_planner import BoustrophedonPlanner
+from ..polygon.path_assembler import PathAssembler
 
 
 class MissionPlannerStrategy(ABC):
     @abstractmethod
-    def optimize(self, polygon: Polygon, swath_width: float) -> dict:
+    def optimize(self, polygon, swath_width, base_point=None, obstacle_polygons=None,
+                 energy_model=None, rendezvous_planner=None):
         pass
 
+
 class GeneticStrategy(MissionPlannerStrategy):
-    def optimize(self, polygon: Polygon, swath_width: float) -> dict:
+    def optimize(self, polygon, swath_width, base_point=None, obstacle_polygons=None,
+                 energy_model=None, rendezvous_planner=None):
         planner = BoustrophedonPlanner(spray_width=swath_width)
 
         num_vertices = len(list(polygon.exterior.coords))
         poly_area = polygon.area
 
         if num_vertices <= 8 and poly_area <= 50000:
-            params = {'pop_size': 200, 'generations': 300}
+            params = {"pop_size": 200, "generations": 300}
         elif num_vertices <= 15 and poly_area <= 200000:
-            params = {'pop_size': 150, 'generations': 200}
+            params = {"pop_size": 150, "generations": 200}
         else:
-            params = {'pop_size': 100, 'generations': 150}
+            params = {"pop_size": 100, "generations": 150}
 
         optimizer = SweepAngleOptimizer(
             planner,
-            pop_size=params['pop_size'],
-            generations=params['generations'],
+            pop_size=params["pop_size"],
+            generations=params["generations"],
             early_stopping_patience=50,
+            energy_model=energy_model,
+            rendezvous_planner=rendezvous_planner,
         )
 
-        best_angle, best_path, metrics = optimizer.optimize(polygon)
+        best_solution = optimizer.optimize(polygon, base_point=base_point)
 
         return {
-            'path': best_path,
-            'angle': best_angle,
-            'metrics': metrics,
-            'gen_stats': metrics.get('gen_stats', []),
+            "angle": best_solution.get("angle", 0.0),
+            "route_segments": best_solution.get("route_segments", []),
+            "combined_path": best_solution.get("combined_path", []),
+            "planner_metrics": best_solution.get("planner_metrics", {}),
+            "route_distances": best_solution.get("route_distances", {}),
+            "rv_count": best_solution.get("rv_count", 0),
+            "rv_wait": best_solution.get("rv_wait", 0.0),
+            "metrics": {
+                "fitness": best_solution.get("fitness"),
+                "l": best_solution.get("l"),
+                "s_prime": best_solution.get("s_prime"),
+                "extra_coverage_pct": best_solution.get("extra_coverage_pct"),
+            },
+            "gen_stats": best_solution.get("gen_stats", []),
         }
 
-class SimpleGridStrategy(MissionPlannerStrategy):
-    def optimize(self, polygon: Polygon, swath_width: float) -> dict:
-        planner = BoustrophedonPlanner(spray_width=swath_width)
 
+class SimpleGridStrategy(MissionPlannerStrategy):
+    def optimize(self, polygon, swath_width, base_point=None, obstacle_polygons=None,
+                 energy_model=None, rendezvous_planner=None):
+        planner = BoustrophedonPlanner(spray_width=swath_width)
         obstacle_union = build_obstacle_union(polygon)
 
         candidates = []
+
         for angle in [0.0, 90.0]:
-            path, l, s_prime, turns = planner.generate_path(
-                polygon, angle, obstacles=obstacle_union,
+            planner_result = planner.generate_path(
+                polygon,
+                angle,
+                obstacles=obstacle_union,
             )
+
+            sweep_segments = planner_result.get("sweep_segments", [])
+            planner_metrics = planner_result.get("metrics", {})
+
+            if not sweep_segments:
+                continue
+
+            assembler = PathAssembler(polygon)
+            assembly_result = assembler.assemble_connected(sweep_segments)
+
+            route_segments = assembly_result.get("route_segments", [])
+            combined_path = assembly_result.get("combined_path", [])
+            route_distances = assembly_result.get("distances", {})
+
+            base_cost = 0.0
+            if base_point is not None and route_segments:
+                bp = (float(base_point[0]), float(base_point[1]))
+                _, d_entry = assembler.safe_connection(bp, route_segments[0]["path"][0])
+                _, d_exit = assembler.safe_connection(route_segments[-1]["path"][-1], bp)
+                base_cost = d_entry + d_exit
+
             candidates.append({
-                'angle': angle,
-                'path': path,
-                'l': l,
-                'metrics': {'angle': angle, 'l': l, 's_prime': s_prime, 'n_turns': turns}
+                "angle": angle,
+                "route_segments": route_segments,
+                "combined_path": combined_path,
+                "planner_metrics": planner_metrics,
+                "route_distances": route_distances,
+                "base_cost": base_cost,
+                "metrics": {
+                    "l": route_distances.get("total_m", 0.0),
+                    "s_prime": planner_metrics.get("coverage_area_m2", 0.0),
+                    "n_turns": planner_metrics.get("turn_count", 0),
+                },
             })
 
-        valid = [c for c in candidates if c['path']]
-        if not valid:
-            return {'path': [], 'angle': 0.0, 'metrics': {}}
+        if not candidates:
+            return {
+                "angle": 0.0,
+                "route_segments": [],
+                "combined_path": [],
+                "planner_metrics": {},
+                "route_distances": {},
+                "metrics": {},
+                "gen_stats": [],
+            }
 
-        best = min(valid, key=lambda x: x['l'])
+        best = min(candidates, key=lambda x: x["route_distances"].get("total_m", float("inf")) + x.get("base_cost", 0.0))
+
         return {
-            'path': best['path'],
-            'angle': best['angle'],
-            'metrics': best['metrics']
+            "angle": best["angle"],
+            "route_segments": best["route_segments"],
+            "combined_path": best["combined_path"],
+            "planner_metrics": best["planner_metrics"],
+            "route_distances": best["route_distances"],
+            "metrics": best["metrics"],
+            "gen_stats": [],
         }
 
 

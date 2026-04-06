@@ -41,6 +41,8 @@ class VehicleCursor:
         self.t = 0.0  # fractional progress in current segment
         self.energy_wh = initial_energy_wh
         self.reagent_l = initial_reagent_l
+        self.initial_energy_wh = initial_energy_wh
+        self.initial_reagent_l = initial_reagent_l
         self.done = False
         self.sim_time_s = 0.0
 
@@ -83,10 +85,17 @@ class VehicleCursor:
                 self.reagent_l -= seg.reagent_consumed_l * fraction_remaining
 
                 time_remaining -= time_left_in_seg
+                prev_type = seg.segment_type
 
                 # Move to next segment
                 self.seg_idx += 1
                 self.t = 0.0
+
+                # Recharge: when leaving a service segment reset battery/reagent
+                # so each new cycle starts from full resources.
+                if prev_type == SegmentType.service and self.seg_idx < len(self.route.segments):
+                    self.energy_wh = self.initial_energy_wh
+                    self.reagent_l = self.initial_reagent_l
             else:
                 # Partial advance within segment
                 advance_fraction = time_remaining / seg_duration

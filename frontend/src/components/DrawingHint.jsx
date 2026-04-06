@@ -20,6 +20,8 @@ export default function DrawingHint({ mode }) {
     text = 'Click to add points · Right-click to undo · Press "Finish" when done'
   } else if (mode === 'set_base_point') {
     text = 'Click on the map to set the base or recharge point'
+  } else if (mode === 'draw_ugv_route') {
+    text = 'Click to add UGV waypoints · Right-click to undo · Press "Finish UGV Route" when done (min 2 points)'
   } else {
     text = 'Click to add obstacle points · Right-click to undo · Press "Finish Obstacle" when done'
   }

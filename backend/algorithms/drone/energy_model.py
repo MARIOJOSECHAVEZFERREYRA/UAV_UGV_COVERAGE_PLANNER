@@ -165,6 +165,26 @@ class DroneEnergyModel:
         """
         return self.drone.battery_capacity_wh * (1.0 - self.drone.battery_reserve_pct / 100.0)
 
+    def reserve_wh_static(self):
+        """
+        Operational reserve for static-base missions (5% of usable energy).
+
+        In static mode the segmenter computes the return distance to the fixed
+        base exactly, so only a small safety buffer is needed.
+        """
+        return self.usable_energy_wh() * 0.05
+
+    def reserve_wh_mobile(self):
+        """
+        Operational reserve for mobile-rendezvous missions (20% of usable energy).
+
+        In dynamic mode the drone may need to fly to a rendezvous point whose
+        exact location is not yet known when the check is performed.  The larger
+        reserve guarantees that enough energy remains to reach any feasible point
+        on the UGV polyline after completing the current segment.
+        """
+        return self.usable_energy_wh() * 0.20
+
     def energy_landing_takeoff(self, reagent_remaining_l):
         """Energy required to land and take off at the rendezvous point."""
         height = self.drone.spray_height_m
@@ -179,7 +199,7 @@ class DroneEnergyModel:
     def can_continue(self, energy_remaining_wh, reagent_remaining_l, distance_to_rendezvous_m):
         transit_energy = self.energy_transit(distance_to_rendezvous_m, reagent_remaining_l)
         landing_takeoff_energy = self.energy_landing_takeoff(reagent_remaining_l)
-        reserve_energy = self.usable_energy_wh() * 0.10
+        reserve_energy = self.reserve_wh_mobile()
         required_energy = transit_energy + landing_takeoff_energy + reserve_energy
 
         if energy_remaining_wh < required_energy:

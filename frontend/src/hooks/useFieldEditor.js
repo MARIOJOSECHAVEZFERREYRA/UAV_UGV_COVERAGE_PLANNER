@@ -8,6 +8,7 @@ export function useFieldEditor(resetMission) {
   const [drawnPolygon, setDrawnPolygon] = useState(null)
   const [obstacles, setObstacles] = useState([])
   const [basePoint, setBasePoint] = useState(null)
+  const [ugvRoute, setUgvRoute] = useState(null)
   const [intersectionWarning, setIntersectionWarning] = useState(false)
 
   const activeField = useMemo(() => {
@@ -58,6 +59,12 @@ export function useFieldEditor(resetMission) {
       return
     }
 
+    // UGV route is an open polyline — no intersection check needed
+    if (mode === MODE.DRAW_UGV_ROUTE) {
+      setDrawingPoints(points => [...points, [x, y]])
+      return
+    }
+
     if (wouldSelfIntersect(drawingPoints, [x, y])) {
       setIntersectionWarning(true)
       return
@@ -91,6 +98,19 @@ export function useFieldEditor(resetMission) {
     setMode(MODE.DRAW_POLYGON)
     setDrawingPoints([])
     setIntersectionWarning(false)
+  }, [mode, drawingPoints])
+
+  const handleToggleDrawUgvRoute = useCallback(() => {
+    if (mode === MODE.DRAW_UGV_ROUTE) {
+      if (drawingPoints.length >= 2) {
+        setUgvRoute([...drawingPoints])
+      }
+      setDrawingPoints([])
+      setMode(MODE.NONE)
+      return
+    }
+    setMode(MODE.DRAW_UGV_ROUTE)
+    setDrawingPoints([])
   }, [mode, drawingPoints])
 
   const handleToggleSetBasePoint = useCallback(() => {
@@ -128,6 +148,7 @@ export function useFieldEditor(resetMission) {
     setDrawnPolygon(null)
     setObstacles([])
     setBasePoint(null)
+    setUgvRoute(null)
     resetDrawingAndMission()
   }, [resetDrawingAndMission])
 
@@ -136,6 +157,7 @@ export function useFieldEditor(resetMission) {
     drawingPoints,
     activeField,
     basePoint,
+    ugvRoute,
     intersectionWarning,
     addPoint,
     undoPoint,
@@ -143,6 +165,7 @@ export function useFieldEditor(resetMission) {
     handleToggleDrawPolygon,
     handleToggleSetBasePoint,
     handleToggleDrawObstacle,
+    handleToggleDrawUgvRoute,
     handleLoadField,
     handleClear,
   }
