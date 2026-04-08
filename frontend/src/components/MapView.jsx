@@ -479,7 +479,7 @@ export default function MapView({
 
   useEffect(() => {
     if (!ready) return
-    const data = highlight === 'ferry' ? safeZoneToGeoJSON(safeZone) : EMPTY_FC
+    const data = highlight !== 'ferry' ? safeZoneToGeoJSON(safeZone) : EMPTY_FC
     mapRef.current.getSource('safe-zone').setData(data)
   }, [ready, safeZone, highlight])
 

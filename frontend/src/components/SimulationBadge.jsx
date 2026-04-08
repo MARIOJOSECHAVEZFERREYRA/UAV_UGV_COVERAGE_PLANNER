@@ -82,18 +82,8 @@ export default function SimulationBadge({
         <span style={{ color: C.muted, fontVariantNumeric: 'tabular-nums' }}>
           {formatSimTime(simTimeS)}
         </span>
-        <button
-          title="Expand simulation controls"
-          onClick={() => { setMinimized(false); onResume() }}
-          style={{
-            background: 'transparent', border: 'none',
-            color: C.accent, cursor: 'pointer',
-            fontSize: 13, padding: '0 2px',
-            fontFamily: 'inherit', lineHeight: 1,
-          }}
-        >
-          ⤢
-        </button>
+        <CtrlBtn title="Expand" onClick={() => { setMinimized(false); onResume() }}>⤢</CtrlBtn>
+        <CtrlBtn title="Close simulation" variant="danger" onClick={onDismiss}>✕</CtrlBtn>
       </div>
     )
   }
@@ -119,14 +109,9 @@ export default function SimulationBadge({
         >
           {isPaused ? '▶' : '⏸'}
         </CtrlBtn>
-
-        <CtrlBtn title="Restart from beginning" onClick={onRestart}>
-          ⟳
-        </CtrlBtn>
-
-        <CtrlBtn title="Minimize" onClick={() => { setMinimized(true); onPause() }}>
-          ✕
-        </CtrlBtn>
+        <CtrlBtn title="Restart" onClick={onRestart}>⟳</CtrlBtn>
+        <CtrlBtn title="Minimize" onClick={() => { setMinimized(true); onPause() }}>−</CtrlBtn>
+        <CtrlBtn title="Close simulation" variant="danger" onClick={onDismiss}>✕</CtrlBtn>
       </div>
 
       <Sep />
@@ -144,10 +129,8 @@ export default function SimulationBadge({
                 border: `1px solid ${active ? C.accent : C.border}`,
                 background: active ? `${C.accent}22` : 'transparent',
                 color: active ? C.accent : C.muted,
-                borderRadius: 4,
-                cursor: 'pointer',
-                fontSize: 11,
-                fontFamily: 'inherit',
+                borderRadius: 4, cursor: 'pointer',
+                fontSize: 11, fontFamily: 'inherit',
                 transition: 'all 0.15s',
               }}
             >

@@ -1,21 +1,9 @@
 class DroneEnergyModel:
     """
     Physics-based energy model for agricultural spray drones.
-
-    Implements Actuator Disk Theory for non-linear hover power scaling
-    with mass, and derives all energy, reagent, and time costs from
-    first principles given a Drone ORM instance.
     """
 
     def __init__(self, drone, liquid_density_kg_l=1.0):
-        """
-        Parameters
-        ----------
-        drone : Drone
-            SQLAlchemy Drone model instance with all spec columns populated.
-        liquid_density_kg_l : float
-            Density of spray liquid in kg/L. Default 1.0 (aqueous pesticide solution).
-        """
         self.drone = drone
         self.liquid_density = liquid_density_kg_l
 
@@ -68,6 +56,49 @@ class DroneEnergyModel:
         return self.cruise_power(reagent_remaining_l) + self.drone.spray_pump_power_w
 
     # ------------------------------------------------------------------
+    # PERFIL CINEMATICO RECTILINEO (helper interno)
+    # ------------------------------------------------------------------
+
+    def _straight_profile(self, distance_m, v_target_ms, a_acc_ms2, a_dec_ms2):
+        """
+        Three-phase kinematic profile for a straight segment: acc / cruise / dec.
+
+        This is a semiempirical extension of the nonlinear energy model.
+        It is NOT an official manufacturer specification.
+
+        Parameters
+        ----------
+        distance_m  : segment length (m)
+        v_target_ms : desired cruise speed (m/s)
+        a_acc_ms2   : horizontal acceleration (m/s²)
+        a_dec_ms2   : horizontal deceleration (m/s²)
+
+        Returns
+        -------
+        (t_acc, t_cruise, t_dec, v_peak)
+        - v_peak == v_target_ms when a cruise phase exists
+        - t_cruise == 0 when segment is too short to reach v_target_ms
+        """
+        d_acc_full = v_target_ms ** 2 / (2.0 * a_acc_ms2)
+        d_dec_full = v_target_ms ** 2 / (2.0 * a_dec_ms2)
+
+        if distance_m >= d_acc_full + d_dec_full:
+            v_peak = v_target_ms
+            t_acc = v_peak / a_acc_ms2
+            t_dec = v_peak / a_dec_ms2
+            d_cruise = distance_m - d_acc_full - d_dec_full
+            t_cruise = d_cruise / v_peak
+        else:
+            # Segment too short to reach v_target; solve for v_peak such that
+            # d = v_peak² / (2·a_acc) + v_peak² / (2·a_dec)
+            v_peak = (2.0 * distance_m / (1.0 / a_acc_ms2 + 1.0 / a_dec_ms2)) ** 0.5
+            t_acc = v_peak / a_acc_ms2
+            t_dec = v_peak / a_dec_ms2
+            t_cruise = 0.0
+
+        return t_acc, t_cruise, t_dec, v_peak
+
+    # ------------------------------------------------------------------
     # COSTOS ENERGETICOS POR SEGMENTO
     # ------------------------------------------------------------------
 
@@ -75,10 +106,21 @@ class DroneEnergyModel:
         """
         Energy in Wh consumed flying a straight spray segment.
 
-        E = P_spray(m) * (distance_m / speed_cruise_ms) / 3600
+        Applies a three-phase kinematic profile (acc / cruise / dec) with
+        semiempirical power factors for each phase.  NOT an official DJI spec.
         """
-        time_s = distance_m / self.drone.speed_cruise_ms
-        energy_ws = self.spray_power(reagent_remaining_l) * time_s
+        t_acc, t_cruise, t_dec, _ = self._straight_profile(
+            distance_m,
+            self.drone.speed_cruise_ms,
+            self.drone.accel_horizontal_ms2,
+            self.drone.decel_horizontal_ms2,
+        )
+        p_base = self.spray_power(reagent_remaining_l)
+        energy_ws = (
+            self.drone.power_accel_factor * p_base * t_acc
+            + p_base * t_cruise
+            + self.drone.power_decel_factor * p_base * t_dec
+        )
         return energy_ws / 3600.0
 
     def energy_turn(self, angle_deg, reagent_remaining_l):
@@ -101,12 +143,21 @@ class DroneEnergyModel:
         """
         Energy in Wh consumed during a transit (no spraying) leg.
 
-        E_transit = P_cruise(m) * (distance_m / speed_max_ms) / 3600
-
-        Uses speed_max_ms because the drone can fly faster when not spraying.
+        Applies a three-phase kinematic profile (acc / cruise / dec) at
+        speed_max_ms with semiempirical power factors.  NOT an official DJI spec.
         """
-        time_s = distance_m / self.drone.speed_max_ms
-        energy_ws = self.cruise_power(reagent_remaining_l) * time_s
+        t_acc, t_cruise, t_dec, _ = self._straight_profile(
+            distance_m,
+            self.drone.speed_max_ms,
+            self.drone.accel_horizontal_ms2,
+            self.drone.decel_horizontal_ms2,
+        )
+        p_base = self.cruise_power(reagent_remaining_l)
+        energy_ws = (
+            self.drone.power_accel_factor * p_base * t_acc
+            + p_base * t_cruise
+            + self.drone.power_decel_factor * p_base * t_dec
+        )
         return energy_ws / 3600.0
 
     # ------------------------------------------------------------------
@@ -117,13 +168,9 @@ class DroneEnergyModel:
         """
         Reagent consumed in liters over a spray segment.
 
-        dQ = spray_flow_rate_lpm * (distance_m / speed_cruise_ms) / 60
-
-        Divides by 60 to convert flow from L/min to L/s before multiplying
-        by the segment duration in seconds.
+        dQ = spray_flow_rate_lpm * time_straight(distance_m) / 60
         """
-        time_s = distance_m / self.drone.speed_cruise_ms
-        return self.drone.spray_flow_rate_lpm * time_s / 60.0
+        return self.drone.spray_flow_rate_lpm * self.time_straight(distance_m) / 60.0
 
     # ------------------------------------------------------------------
     # COSTOS DE TIEMPO
@@ -131,27 +178,40 @@ class DroneEnergyModel:
 
     def time_straight(self, distance_m):
         """
-        Time in seconds to fly a straight spray segment.
-
-        T = distance_m / speed_cruise_ms
+        Time in seconds to fly a straight spray segment (three-phase profile).
         """
-        return distance_m / self.drone.speed_cruise_ms
+        t_acc, t_cruise, t_dec, _ = self._straight_profile(
+            distance_m,
+            self.drone.speed_cruise_ms,
+            self.drone.accel_horizontal_ms2,
+            self.drone.decel_horizontal_ms2,
+        )
+        return t_acc + t_cruise + t_dec
 
     def time_turn(self, angle_deg):
         """
         Time in seconds to complete a turn.
 
         T = turn_duration_s * (angle_deg / 180)
+
+        Estado de integracion:
+          - Fisicamente valido y testeado.
+          - NO llamado por el planificador actual.
+          - Ver energy_turn() para el razonamiento completo.
         """
         return self.drone.turn_duration_s * (angle_deg / 180.0)
 
     def time_transit(self, distance_m):
         """
-        Time in seconds to complete a transit leg without spraying.
-
-        T = distance_m / speed_max_ms
+        Time in seconds to complete a transit leg without spraying (three-phase profile).
         """
-        return distance_m / self.drone.speed_max_ms
+        t_acc, t_cruise, t_dec, _ = self._straight_profile(
+            distance_m,
+            self.drone.speed_max_ms,
+            self.drone.accel_horizontal_ms2,
+            self.drone.decel_horizontal_ms2,
+        )
+        return t_acc + t_cruise + t_dec
 
     # ------------------------------------------------------------------
     # CONDICIONES DE RECURSO
@@ -167,43 +227,125 @@ class DroneEnergyModel:
 
     def reserve_wh_static(self):
         """
-        Operational reserve for static-base missions (5% of usable energy).
+        Operational reserve for static-base missions (20% of usable energy).
 
-        In static mode the segmenter computes the return distance to the fixed
-        base exactly, so only a small safety buffer is needed.
+        Unified with the mobile reserve: both mission types hold back 20% of
+        usable energy as a safety margin before declaring a segment infeasible.
         """
-        return self.usable_energy_wh() * 0.05
+        return self.usable_energy_wh() * 0.20
 
     def reserve_wh_mobile(self):
         """
         Operational reserve for mobile-rendezvous missions (20% of usable energy).
 
         In dynamic mode the drone may need to fly to a rendezvous point whose
-        exact location is not yet known when the check is performed.  The larger
+        exact location is not yet known when the check is performed.  The 20%
         reserve guarantees that enough energy remains to reach any feasible point
         on the UGV polyline after completing the current segment.
         """
         return self.usable_energy_wh() * 0.20
 
     def energy_landing_takeoff(self, reagent_remaining_l):
-        """Energy required to land and take off at the rendezvous point."""
+        """
+        Energy in Wh required to land and take off at a service point.
+
+        Models descent + ascent at spray height using vertical speed.
+        Applied at rendezvous points where the drone physically lands on or
+        near the UGV to be refueled and reloaded.
+        """
         height = self.drone.spray_height_m
         vertical_speed = self.drone.speed_vertical_ms
         descent_time = height / vertical_speed
         ascent_time = height / vertical_speed
         power = self.hover_power(reagent_remaining_l)
-        energy = power * (descent_time + ascent_time) / 3600
-        return energy
+        return power * (descent_time + ascent_time) / 3600.0
 
+    # ------------------------------------------------------------------
+    # COSTOS DE RECUPERACION (trayecto hasta el punto de servicio)
+    # ------------------------------------------------------------------
+
+    def energy_to_service_static(self, dist_m, liquid_rem):
+        """
+        Energy in Wh needed to return to the fixed base.
+
+        Preserves the existing static-mode cost model: transit energy only,
+        consistent with how segment_path() has always tracked the return budget.
+        """
+        return self.energy_transit(dist_m, liquid_rem)
+
+    def energy_to_service_dynamic(self, dist_m, liquid_rem):
+        """
+        Energy in Wh needed to reach a mobile rendezvous point.
+
+        Includes transit flight plus landing/takeoff at the rendezvous, since
+        the drone physically lands on or near the UGV for servicing.
+        """
+        return self.energy_transit(dist_m, liquid_rem) + self.energy_landing_takeoff(liquid_rem)
+
+    # ------------------------------------------------------------------
+    # PREDICADOS DE FACTIBILIDAD POST-SEGMENTO
+    # ------------------------------------------------------------------
+
+    def feasible_after_segment_static(self, energy_rem, liquid_rem,
+                                      energy_step, liq_step, dist_to_base):
+        """
+        True if the drone can execute the next segment and still return to the
+        fixed base with enough reserve.
+
+        Parameters
+        ----------
+        energy_rem  : Wh currently available.
+        liquid_rem  : liters currently available.
+        energy_step : Wh cost of executing the candidate segment.
+        liq_step    : liters consumed by the candidate segment.
+        dist_to_base: straight-line distance (m) from the segment end to base.
+        """
+        liquid_after = liquid_rem - liq_step
+        e_service = self.energy_to_service_static(dist_to_base, max(liquid_after, 0.0))
+        return (
+            energy_rem - energy_step - e_service >= self.reserve_wh_static()
+            and liquid_after >= 0.0
+        )
+
+    def feasible_after_segment_dynamic(self, energy_rem, liquid_rem,
+                                       energy_step, liq_step, dist_to_rv):
+        """
+        True if the drone can execute the next segment and still reach a
+        rendezvous point with enough reserve.
+
+        Includes landing/takeoff cost at the rendezvous (physically required
+        for battery swap and reagent reload on the UGV).
+
+        Parameters
+        ----------
+        energy_rem : Wh currently available.
+        liquid_rem : liters currently available.
+        energy_step: Wh cost of executing the candidate segment.
+        liq_step   : liters consumed by the candidate segment.
+        dist_to_rv : UAV flight distance (m) to the best rendezvous candidate.
+                     Pass float('inf') when no feasible rendezvous exists.
+        """
+        liquid_after = liquid_rem - liq_step
+        e_service = self.energy_to_service_dynamic(dist_to_rv, max(liquid_after, 0.0))
+        return (
+            energy_rem - energy_step - e_service >= self.reserve_wh_mobile()
+            and liquid_after >= 0.0
+        )
 
     def can_continue(self, energy_remaining_wh, reagent_remaining_l, distance_to_rendezvous_m):
+        """
+        True if the drone can reach the rendezvous point *from its current
+        position* (no additional segment executed).
+
+        This answers a punctual reachability question: "given my current
+        state, can I still get to a service point?" It is NOT a substitute
+        for feasible_after_segment_dynamic, which also accounts for the energy
+        cost of the next work segment before the recovery leg.
+
+        Reserve used: reserve_wh_mobile() (20% of usable energy).
+        """
         transit_energy = self.energy_transit(distance_to_rendezvous_m, reagent_remaining_l)
         landing_takeoff_energy = self.energy_landing_takeoff(reagent_remaining_l)
         reserve_energy = self.reserve_wh_mobile()
         required_energy = transit_energy + landing_takeoff_energy + reserve_energy
-
-        if energy_remaining_wh < required_energy:
-            return False
-        if reagent_remaining_l <= 0:
-            return False
-        return True
+        return energy_remaining_wh >= required_energy and reagent_remaining_l > 0

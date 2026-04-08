@@ -6,14 +6,6 @@ from backend.db.drone import Drone
 
 router = APIRouter(prefix="/drones", tags=["drones"])
 
-# ─── Agronomic constants (single source of truth for frontend defaults) ────────
-_DEFAULT_APP_RATE_L_HA = 10.0
-_APP_RATE_MIN = 3.0
-_APP_RATE_MAX = 50.0
-_SWATH_FACTOR_MIN = 0.6   # 60 % of nominal
-_SWATH_FACTOR_MAX = 1.4   # 140 % of nominal
-_MARGIN_FACTOR_DEFAULT = 0.5  # margin = swath * factor
-
 
 def _drone_or_404(name: str, db: Session) -> Drone:
     drone = db.query(Drone).filter(Drone.name == name).first()
@@ -29,7 +21,7 @@ def list_drones(db: Session = Depends(get_db)):
         {
             "name": d.name,
             "num_rotors": d.num_rotors,
-            "default_swath": d.spray_swath_m,
+            "default_swath": d.spray_swath_max_m,
             "speed_cruise_ms": d.speed_cruise_ms,
             "speed_max_ms": d.speed_max_ms,
             "spray_flow_rate_lpm": d.spray_flow_rate_lpm,
@@ -49,22 +41,20 @@ def drone_mission_defaults(name: str, db: Session = Depends(get_db)):
     This is the single source of truth consumed by the frontend.
     """
     d = _drone_or_404(name, db)
-    default_swath = d.spray_swath_m
-    default_margin = round(default_swath * _MARGIN_FACTOR_DEFAULT, 2)
+    default_swath = d.spray_swath_max_m
+    default_margin = round(d.spray_swath_max_m / 2.0, 2)
 
     return {
-        # Swath
+        # Swath — min/max come directly from persisted DB fields
         "swath_m":     default_swath,
-        "swath_min_m": round(default_swath * _SWATH_FACTOR_MIN, 1),
-        "swath_max_m": round(default_swath * _SWATH_FACTOR_MAX, 1),
-        # Safety margin
-        "margin_m":     default_margin,
-        "margin_min_m": 0.5,
-        "margin_max_m": round(default_swath, 1),  # at most one full swath
-        # Application rate (agronomic, not drone-specific)
-        "app_rate_l_ha":     _DEFAULT_APP_RATE_L_HA,
-        "app_rate_min_l_ha": _APP_RATE_MIN,
-        "app_rate_max_l_ha": _APP_RATE_MAX,
+        "spray_swath_min_m": d.spray_swath_min_m,
+        "spray_swath_max_m": d.spray_swath_max_m,
+        # Safety margin — suggested default only; backend rule is simply margin >= 0
+        "margin_m": default_margin,
+        # Application rate — fully persisted per drone
+        "app_rate_l_ha":     d.app_rate_default_l_ha,
+        "app_rate_min_l_ha": d.app_rate_min_l_ha,
+        "app_rate_max_l_ha": d.app_rate_max_l_ha,
         # Flight speed
         "speed_ms":     d.speed_cruise_ms,
         "speed_min_ms": d.speed_cruise_ms,
@@ -94,7 +84,11 @@ def get_drone(name: str, db: Session = Depends(get_db)):
         "turn_duration_s": d.turn_duration_s,
         "turn_power_factor": d.turn_power_factor,
         "spray_flow_rate_lpm": d.spray_flow_rate_lpm,
-        "spray_swath_m": d.spray_swath_m,
+        "spray_swath_min_m": d.spray_swath_min_m,
+        "spray_swath_max_m": d.spray_swath_max_m,
+        "app_rate_default_l_ha": d.app_rate_default_l_ha,
+        "app_rate_min_l_ha": d.app_rate_min_l_ha,
+        "app_rate_max_l_ha": d.app_rate_max_l_ha,
         "spray_height_m": d.spray_height_m,
         "spray_pump_power_w": d.spray_pump_power_w,
         "service_time_s": d.service_time_s,

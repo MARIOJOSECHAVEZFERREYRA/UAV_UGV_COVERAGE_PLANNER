@@ -6,6 +6,7 @@ genetic algorithm (Li et al. 2023, Aerospace 10, 755 — Section 2.5).
 
 """
 
+import math
 import random
 import numpy as np
 from shapely.geometry import Polygon
@@ -15,7 +16,7 @@ from shapely import affinity
 from ..polygon.decomposition import ConcaveDecomposer
 from ..polygon.path_planner import BoustrophedonPlanner
 from ..polygon.path_assembler import PathAssembler
-from ..rendezvous.mission_simulator import simulate_mission_with_rendezvous
+from ..simulation.mission_simulator import simulate_mission_with_rendezvous
 
 
 def build_obstacle_union(polygon: Polygon):
@@ -46,8 +47,108 @@ class SweepAngleOptimizer:
         self.energy_model = energy_model
         self.rendezvous_planner = rendezvous_planner
         self.w_rv = float(w_rv)
-        # Modo de simulacion: True cuando se dispone de drone + UGV
+        # _rv_enabled: dynamic mode — co-simulate rendezvous during fitness evaluation.
+        # _static_deadhead_enabled: static mode — estimate intermediate deadhead costs
+        #   so the GA can co-optimize sweep angle with deadhead distance.
+        # Both require energy_model; dynamic additionally requires rendezvous_planner.
         self._rv_enabled = energy_model is not None and rendezvous_planner is not None
+        self._static_deadhead_enabled = energy_model is not None and rendezvous_planner is None
+
+    def _estimate_static_deadhead(self, route_segments, base_point):
+        """
+        Estimates total intermediate deadhead distance for a static mission.
+
+        Walks route_segments tracking energy and reagent using the same physics
+        predicates as MissionSegmenter.segment_path(), but without the geometry
+        overhead (safe_connection, PathAssembler, atomic expansion).
+
+        Cycle boundaries are detected using feasible_after_segment_static().
+        When a break is found, the round-trip distance (cycle_end → base → next_start)
+        is accumulated. Distances are Euclidean — an acceptable approximation for
+        fitness comparison between candidate angles.
+
+        The d_entry (base → first route point) is already included in total_l by
+        _evaluate_angle; this method only accumulates INTERMEDIATE deadheads.
+
+        Returns
+        -------
+        float : estimated total intermediate deadhead in meters
+        """
+        em = self.energy_model
+        drone = em.drone
+        bx, by = float(base_point[0]), float(base_point[1])
+
+        e_rem = em.usable_energy_wh()
+        q_rem = float(drone.mass_tank_full_kg)
+        deadhead_total = 0.0
+        cycle_empty = True
+        uav_x, uav_y = bx, by
+
+        # Deduct entry transit cost so resource tracking is consistent with
+        # MissionSegmenter, which subtracts the base → first-point leg before
+        # starting the feasibility loop.
+        if route_segments:
+            first_path = route_segments[0].get('path', [])
+            if first_path:
+                fx, fy = float(first_path[0][0]), float(first_path[0][1])
+                d_entry = math.hypot(fx - bx, fy - by)
+                e_rem = max(0.0, e_rem - em.energy_transit(d_entry, q_rem))
+                uav_x, uav_y = fx, fy
+
+        for seg in route_segments:
+            seg_type = seg.get('segment_type', 'ferry')
+            dist = float(seg.get('distance_m', 0.0))
+            path = seg.get('path', [])
+
+            if dist < 1e-9 or len(path) < 2:
+                continue
+
+            p1x, p1y = float(path[0][0]), float(path[0][1])
+            p2x, p2y = float(path[-1][0]), float(path[-1][1])
+
+            if seg_type == 'sweep':
+                e_step = em.energy_straight(dist, q_rem)
+                q_step = em.reagent_consumed(dist)
+            else:
+                e_step = em.energy_transit(dist, q_rem)
+                q_step = 0.0
+
+            d_after_to_base = math.hypot(p2x - bx, p2y - by)
+
+            can_do = em.feasible_after_segment_static(
+                e_rem, q_rem, e_step, q_step, d_after_to_base
+            )
+
+            if can_do or cycle_empty:
+                e_rem -= e_step
+                q_rem = max(0.0, q_rem - q_step)
+                uav_x, uav_y = p2x, p2y
+                cycle_empty = False
+            else:
+                # Cycle break before p1: fly to base and back
+                d_back = math.hypot(uav_x - bx, uav_y - by)
+                d_fwd = math.hypot(p1x - bx, p1y - by)
+                deadhead_total += d_back + d_fwd
+
+                # Reset resources and deduct entry cost for the new cycle
+                e_rem = em.usable_energy_wh()
+                q_rem = float(drone.mass_tank_full_kg)
+                e_rem = max(0.0, e_rem - em.energy_transit(d_fwd, q_rem))
+
+                # Recompute step with fresh q_rem before executing
+                if seg_type == 'sweep':
+                    e_step = em.energy_straight(dist, q_rem)
+                    q_step = em.reagent_consumed(dist)
+                else:
+                    e_step = em.energy_transit(dist, q_rem)
+                    q_step = 0.0
+
+                e_rem -= e_step
+                q_rem = max(0.0, q_rem - q_step)
+                uav_x, uav_y = p2x, p2y
+                cycle_empty = False
+
+        return deadhead_total
 
     def _evaluate_angle(self,angle_deg: int,polygon: Polygon,target_area_S: float,assembler: PathAssembler = None,obstacle_union=None,base_point=None,
     ) -> dict:
@@ -104,6 +205,12 @@ class SweepAngleOptimizer:
             _, d_entry = assembler.safe_connection(base_pt, route_segments[0]["path"][0])
             _, d_exit = assembler.safe_connection(route_segments[-1]["path"][-1], base_pt)
             total_l += d_entry + d_exit
+
+            # Static mode: estimate intermediate per-cycle deadheads so the GA
+            # co-optimizes sweep angle with deadhead distance, not just route length.
+            # O(N_route_segments) — negligible overhead vs. the rest of this method.
+            if self._static_deadhead_enabled:
+                total_l += self._estimate_static_deadhead(route_segments, base_pt)
 
         # Simulacion de mision con rendezvous (solo si hay drone + UGV configurados)
         rv_feasible = True
@@ -264,7 +371,18 @@ class SweepAngleOptimizer:
         target_area_S = polygon.area
         eval_cache = {}
 
-        assembler = PathAssembler(polygon)
+        # Build a service-point-aware assembler so the NN step biases sweep
+        # ordering toward the service location, reducing deadhead at cycle ends.
+        # Dynamic mode: bias toward UGV polyline.
+        # Static mode:  bias toward base_point (the fixed logistics base).
+        ugv_poly = self.rendezvous_planner.ugv_polyline if self._rv_enabled else None
+        assembler = PathAssembler(
+            polygon,
+            ugv_polyline=ugv_poly,
+            ugv_bias=0.3,
+            base_point=base_point if self._static_deadhead_enabled else None,
+            base_bias=0.3,
+        )
         obstacle_union = build_obstacle_union(polygon)
 
         population = [random.randint(0, 179) for _ in range(self.pop_size)]
@@ -431,6 +549,12 @@ class SweepAngleOptimizer:
                 }
 
         if best_solution is None:
+            if self._rv_enabled:
+                raise ValueError(
+                    "SweepAngleOptimizer: all evaluated angles produced infeasible "
+                    "rendezvous missions. The field may be too large for the drone's "
+                    "range, or the UGV polyline is unreachable."
+                )
             raise ValueError("SweepAngleOptimizer failed to find a valid solution.")
 
         print(

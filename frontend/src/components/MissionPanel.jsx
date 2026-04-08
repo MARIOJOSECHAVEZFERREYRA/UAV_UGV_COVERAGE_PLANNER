@@ -391,8 +391,8 @@ function ParametersSection({
         <ParamInput
           label="Spray width (m)"
           value={sprayWidth} onChange={setSprayWidth}
-          min={d?.swath_min_m} max={d?.swath_max_m}
-          hint={<RangeHint min={d?.swath_min_m} max={d?.swath_max_m} unit=" m" />}
+          min={d?.spray_swath_min_m} max={d?.spray_swath_max_m}
+          hint={<RangeHint min={d?.spray_swath_min_m} max={d?.spray_swath_max_m} unit=" m" />}
         />
         <ParamInput
           label="App rate (L/ha)"
@@ -412,8 +412,7 @@ function ParametersSection({
         <ParamInput
           label="Margin (m)"
           value={margin} onChange={setMargin}
-          min={d?.margin_min_m} max={d?.margin_max_m}
-          hint={<RangeHint min={d?.margin_min_m} max={d?.margin_max_m} unit=" m" />}
+          min={0}
         />
       </div>
 
@@ -437,7 +436,7 @@ function MetricRow({ label, value }) {
   )
 }
 
-function ResultsSection({ mission, onExport }) {
+function ResultsSection({ mission, onExport, onStartSim, onStopSim, simEnabled }) {
   const metrics = (() => {
     try { return mission.metrics_json ? JSON.parse(mission.metrics_json) : null }
     catch { return null }
@@ -521,9 +520,25 @@ function ResultsSection({ mission, onExport }) {
         </>}
 
         <Divider />
-        <Btn variant='default' onClick={onExport}>
-          Export Mission
-        </Btn>
+        {simEnabled ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{
+              flex: 1, fontSize: 11, color: C.success, fontWeight: 600,
+              display: 'flex', alignItems: 'center', gap: 5,
+            }}>
+              <span style={{
+                width: 7, height: 7, borderRadius: '50%',
+                background: C.success, display: 'inline-block',
+                boxShadow: `0 0 5px ${C.success}`,
+              }} />
+              Simulation active
+            </span>
+            <Btn variant='danger' fullWidth={false} onClick={onStopSim}>Stop</Btn>
+          </div>
+        ) : (
+          <Btn variant='primary' onClick={onStartSim}>Run Simulation</Btn>
+        )}
+        <Btn variant='default' onClick={onExport}>Export Mission</Btn>
       </>}
 
       {mission.status === 'failed' && (
@@ -574,7 +589,7 @@ export default function MissionPanel({
   ugvRoute,
   onToggleDrawPolygon, onToggleDrawObstacle, onToggleSetBasePoint,
   onToggleDrawUgvRoute,
-  onLoadField, onClear, onMissionReady, onViewDroneSpecs,
+  onLoadField, onClear, onMissionReady, onStartSim, onStopSim, simEnabled, onViewDroneSpecs,
 }) {
   const [drones, setDrones]         = useState([])
   const [drone, setDrone]           = useState('')
@@ -625,9 +640,29 @@ export default function MissionPanel({
   async function handleCompute() {
     if (!activeField) return
     if (!basePoint) {
-    setError('Please set a base point before computing the mission.')
-    return
+      setError('Please set a base point before computing the mission.')
+      return
     }
+    const sw = Number(sprayWidth)
+    const ar = Number(appRate)
+    const sp = Number(speed)
+    const mg = Number(margin)
+    if (!sw || sw <= 0) { setError('Spray width must be > 0.'); return }
+    if (defaults?.spray_swath_min_m != null && sw < defaults.spray_swath_min_m)
+      { setError(`Spray width too low (min ${defaults.spray_swath_min_m} m).`); return }
+    if (defaults?.spray_swath_max_m != null && sw > defaults.spray_swath_max_m)
+      { setError(`Spray width too high (max ${defaults.spray_swath_max_m} m).`); return }
+    if (!ar || ar <= 0) { setError('Application rate must be > 0.'); return }
+    if (defaults?.app_rate_min_l_ha != null && ar < defaults.app_rate_min_l_ha)
+      { setError(`App rate too low (min ${defaults.app_rate_min_l_ha} L/ha).`); return }
+    if (defaults?.app_rate_max_l_ha != null && ar > defaults.app_rate_max_l_ha)
+      { setError(`App rate too high (max ${defaults.app_rate_max_l_ha} L/ha).`); return }
+    if (!sp || sp <= 0) { setError('Speed must be > 0.'); return }
+    if (defaults?.speed_min_ms != null && sp < defaults.speed_min_ms)
+      { setError(`Speed too low (min ${defaults.speed_min_ms} m/s).`); return }
+    if (defaults?.speed_max_ms != null && sp > defaults.speed_max_ms)
+      { setError(`Speed too high (max ${defaults.speed_max_ms} m/s).`); return }
+    if (isNaN(mg) || mg < 0) { setError('Margin must be >= 0.'); return }
     setLoading(true); setError(null); setMission(null)
     clearInterval(pollRef.current)
 
@@ -799,7 +834,13 @@ export default function MissionPanel({
       </div>
 
       {mission && (
-        <ResultsSection mission={mission} onExport={() => setShowExport(true)} />
+        <ResultsSection
+          mission={mission}
+          onExport={() => setShowExport(true)}
+          onStartSim={onStartSim}
+          onStopSim={onStopSim}
+          simEnabled={simEnabled}
+        />
       )}
 
       {showExport && (

@@ -17,12 +17,34 @@ class PathAssembler:
     - Exterior ring walk as a last resort, or when an endpoint is outside the
       polygon (e.g. base_point on deadhead segments — holes cannot intercept
       the approach because they are interior to the polygon).
+
+    UGV co-planning:
+    - When ugv_polyline is provided, the greedy nearest-neighbour step adds a
+      bias term: cost = ferry_dist + ugv_bias * dist(candidate_exit, ugv_polyline).
+      This makes the assembler prefer sweep orderings where the UAV's exit point
+      after each sweep is close to the UGV route, reducing deadhead distances
+      at rendezvous events.  ugv_bias=0.0 reproduces the original behaviour.
     """
 
-    def __init__(self, polygon):
+    def __init__(self, polygon, ugv_polyline=None, ugv_bias=0.3,
+                 base_point=None, base_bias=0.3):
         self.polygon = polygon
         self._prepared = prep(polygon.buffer(0.01))
         self._ring_line = LineString(polygon.exterior.coords)
+
+        # UGV co-planning parameters (dynamic mode)
+        self._ugv_polyline = [
+            (float(p[0]), float(p[1])) for p in ugv_polyline
+        ] if ugv_polyline and len(ugv_polyline) >= 2 else None
+        self._ugv_bias = float(ugv_bias) if self._ugv_polyline else 0.0
+
+        # Static base co-planning (static mode — UGV polyline takes precedence)
+        if base_point is not None and self._ugv_polyline is None:
+            self._base_point = (float(base_point[0]), float(base_point[1]))
+            self._base_bias = float(base_bias)
+        else:
+            self._base_point = None
+            self._base_bias = 0.0
 
         try:
             self._vgraph = VisibilityGraph(polygon)
@@ -32,6 +54,55 @@ class PathAssembler:
     @staticmethod
     def _pts_equal(a, b, tol=1e-6):
         return abs(a[0] - b[0]) < tol and abs(a[1] - b[1]) < tol
+
+    def _dist_to_base(self, point):
+        """
+        Euclidean distance from point to the static base.
+
+        Returns 0.0 when base_point is not configured.
+        This is the proxy for static deadhead cost: a sweep whose exit point
+        is close to the base will require a shorter deadhead when the drone
+        returns for battery/reagent service.
+        """
+        if self._base_point is None:
+            return 0.0
+        return math.hypot(
+            float(point[0]) - self._base_point[0],
+            float(point[1]) - self._base_point[1],
+        )
+
+    def _dist_to_ugv(self, point):
+        """
+        Minimum perpendicular distance from point to the UGV polyline in metres.
+
+        Returns 0.0 when ugv_polyline is not configured (static missions).
+        This is the proxy for rendezvous deadhead cost: a sweep whose exit
+        point is close to the UGV polyline will require a shorter deadhead
+        when the UAV needs to land for servicing.
+        """
+        if not self._ugv_polyline:
+            return 0.0
+
+        px, py = float(point[0]), float(point[1])
+        min_d = float('inf')
+
+        for i in range(len(self._ugv_polyline) - 1):
+            x1, y1 = self._ugv_polyline[i]
+            x2, y2 = self._ugv_polyline[i + 1]
+            dx, dy = x2 - x1, y2 - y1
+            seg_len_sq = dx * dx + dy * dy
+
+            if seg_len_sq < 1e-12:
+                d = math.hypot(px - x1, py - y1)
+            else:
+                t = max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / seg_len_sq))
+                cx, cy = x1 + t * dx, y1 + t * dy
+                d = math.hypot(px - cx, py - cy)
+
+            if d < min_d:
+                min_d = d
+
+        return min_d
 
     @staticmethod
     def _segment_record(path_coords, segment_type, spraying):
@@ -288,31 +359,94 @@ class PathAssembler:
             }
 
         # --- Greedy nearest-neighbor: build visit order as [(sweep_idx, is_reversed)] ---
+        #
+        # Cost function:
+        #   cost = ferry_dist_to_entry
+        #          + ugv_bias  * dist(candidate_exit, ugv_polyline)   [dynamic mode]
+        #          + base_bias * dist(candidate_exit, base_point)      [static mode]
+        #
+        # Service-point bias (UGV or base) encourages the NN to prefer sweeps
+        # whose EXIT is close to the service point, so cycle boundaries
+        # (where the drone must return for battery/reagent) tend to fall near
+        # the service point, reducing deadhead distance.
+        #
+        # First-strip selection uses the same service-point proximity so the
+        # mission begins in the part of the field closest to the service point.
         remaining = list(range(len(sweeps)))
-        current_idx = remaining.pop(0)
-        order = [(current_idx, False)]
+
+        if self._ugv_polyline:
+            # Dynamic mode: start from the sweep endpoint closest to UGV start.
+            service_start = self._ugv_polyline[0]
+            best_start_cost = float('inf')
+            best_start_idx = 0
+            best_start_rev = False
+            for idx in remaining:
+                path = sweeps[idx]["path"]
+                d_fwd = math.hypot(path[0][0] - service_start[0], path[0][1] - service_start[1])
+                d_rev = math.hypot(path[-1][0] - service_start[0], path[-1][1] - service_start[1])
+                if d_fwd < best_start_cost:
+                    best_start_cost = d_fwd
+                    best_start_idx = idx
+                    best_start_rev = False
+                if d_rev < best_start_cost:
+                    best_start_cost = d_rev
+                    best_start_idx = idx
+                    best_start_rev = True
+            remaining.remove(best_start_idx)
+            order = [(best_start_idx, best_start_rev)]
+        elif self._base_point is not None:
+            # Static mode: start from the sweep entry closest to the base.
+            bx, by = self._base_point
+            best_start_cost = float('inf')
+            best_start_idx = 0
+            best_start_rev = False
+            for idx in remaining:
+                path = sweeps[idx]["path"]
+                d_fwd = math.hypot(path[0][0] - bx, path[0][1] - by)
+                d_rev = math.hypot(path[-1][0] - bx, path[-1][1] - by)
+                if d_fwd < best_start_cost:
+                    best_start_cost = d_fwd
+                    best_start_idx = idx
+                    best_start_rev = False
+                if d_rev < best_start_cost:
+                    best_start_cost = d_rev
+                    best_start_idx = idx
+                    best_start_rev = True
+            remaining.remove(best_start_idx)
+            order = [(best_start_idx, best_start_rev)]
+        else:
+            current_idx = remaining.pop(0)
+            order = [(current_idx, False)]
 
         while remaining:
             _, last_rev = order[-1]
             last_idx, _ = order[-1]
             current_end = self._sweep_endpoint(sweeps[last_idx]["path"], last_rev)
 
-            best_dist = float("inf")
+            best_cost = float("inf")
             best_idx = None
             best_reverse = False
 
             for idx in remaining:
                 candidate_path = sweeps[idx]["path"]
 
+                # Forward: entry = path[0], exit = path[-1]
                 _, fwd_dist = self._safe_ferry(current_end, candidate_path[0])
-                if fwd_dist < best_dist:
-                    best_dist = fwd_dist
+                fwd_cost = (fwd_dist
+                            + self._ugv_bias * self._dist_to_ugv(candidate_path[-1])
+                            + self._base_bias * self._dist_to_base(candidate_path[-1]))
+                if fwd_cost < best_cost:
+                    best_cost = fwd_cost
                     best_idx = idx
                     best_reverse = False
 
+                # Reversed: entry = path[-1], exit = path[0]
                 _, rev_dist = self._safe_ferry(current_end, candidate_path[-1])
-                if rev_dist < best_dist:
-                    best_dist = rev_dist
+                rev_cost = (rev_dist
+                            + self._ugv_bias * self._dist_to_ugv(candidate_path[0])
+                            + self._base_bias * self._dist_to_base(candidate_path[0]))
+                if rev_cost < best_cost:
+                    best_cost = rev_cost
                     best_idx = idx
                     best_reverse = True
 

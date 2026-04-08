@@ -33,9 +33,13 @@ class MissionCreate(BaseModel):
     spray_width: float = Field(default=5.0, gt=0.0, le=50.0)
     strategy: str = Field(default="genetic", pattern="^(genetic|simple)$")
     drone_name: str = Field(default="DJI Agras T30")
-    app_rate: float = Field(default=10.0, gt=0.0, le=100.0, description="Application rate in L/ha")
+    app_rate: float | None = Field(
+        default=None,
+        gt=0.0,
+        description="Override application rate in L/ha; None = use drone default",
+    )
     cruise_speed_ms: float | None = Field(default=None, gt=0.0, description="Override cruise speed in m/s; None = use drone default")
-    margin_m: float | None = Field(default=None, gt=0.0, description="Safety margin in meters; None = swath/2")
+    margin_m: float | None = Field(default=None, ge=0.0, description="Safety margin in meters; None = swath/2")
 
 
 class WaypointOut(BaseModel):

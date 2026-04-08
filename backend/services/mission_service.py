@@ -6,9 +6,13 @@ from fastapi import HTTPException
 from shapely.geometry import Polygon, Point
 from sqlalchemy.orm import Session
 
-from ..controllers.mission_controller import MissionController
+from ..controllers.mission_controller import StaticMissionController, DynamicMissionController
 from ..db.mission import Mission, MissionStatus, Waypoint, WaypointType
 from ..schemas.mission import MissionCreate
+
+
+MIN_FIELD_AREA_M2    = 100   # 10×10 m — degenerate below this
+MIN_OBSTACLE_AREA_M2 = 1     # 1 m²
 
 
 def validate_mission_request(payload: MissionCreate) -> None:
@@ -17,18 +21,62 @@ def validate_mission_request(payload: MissionCreate) -> None:
     holes = [[tuple(p) for p in ring] for ring in field.obstacles]
     base_point = tuple(field.base_point)
 
-    polygon = Polygon(shell=exterior, holes=holes)
-    if not polygon.is_valid:
-        polygon = polygon.buffer(0)
+    # --- Exterior polygon ---
+    if len(exterior) < 3:
+        raise HTTPException(status_code=422, detail="Field polygon requires at least 3 vertices.")
 
-    if polygon.is_empty:
-        raise HTTPException(status_code=422, detail="Invalid field polygon.")
+    ext_poly = Polygon(exterior)
+    if not ext_poly.is_valid:
+        ext_poly = ext_poly.buffer(0)
+    if ext_poly.is_empty:
+        raise HTTPException(status_code=422, detail="Field polygon is empty or degenerate.")
+    if ext_poly.area < MIN_FIELD_AREA_M2:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Field area ({ext_poly.area:.1f} m²) is below minimum ({MIN_FIELD_AREA_M2} m²)."
+        )
 
+    # --- Obstacles ---
+    obstacle_polys = []
+    for i, hole in enumerate(holes):
+        if len(hole) < 3:
+            raise HTTPException(status_code=422, detail=f"Obstacle {i+1} requires at least 3 vertices.")
+        obs_poly = Polygon(hole)
+        if not obs_poly.is_valid:
+            obs_poly = obs_poly.buffer(0)
+        if obs_poly.is_empty:
+            raise HTTPException(status_code=422, detail=f"Obstacle {i+1} is empty or degenerate.")
+        if obs_poly.area < MIN_OBSTACLE_AREA_M2:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Obstacle {i+1} area ({obs_poly.area:.2f} m²) is below minimum ({MIN_OBSTACLE_AREA_M2} m²)."
+            )
+        if not ext_poly.contains(obs_poly):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Obstacle {i+1} is not fully contained within the field boundary."
+            )
+        for j, prev in enumerate(obstacle_polys):
+            if obs_poly.intersects(prev):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Obstacles {j+1} and {i+1} overlap or touch each other."
+                )
+        obstacle_polys.append(obs_poly)
+
+    # --- Combined polygon (field with holes) ---
+    full_poly = Polygon(shell=exterior, holes=holes)
+    if not full_poly.is_valid:
+        full_poly = full_poly.buffer(0)
+    if full_poly.is_empty or full_poly.area < MIN_FIELD_AREA_M2:
+        raise HTTPException(
+            status_code=422,
+            detail="Field geometry after subtracting obstacles is too small or degenerate."
+        )
+
+    # --- Base point ---
     base_pt = Point(base_point)
-
-    # Static UAG rule for now:
-    # base point must not be inside the spraying field interior.
-    if polygon.contains(base_pt):
+    if full_poly.contains(base_pt):
         raise HTTPException(
             status_code=422,
             detail="base_point must be outside the spray polygon or on its boundary."
@@ -36,7 +84,9 @@ def validate_mission_request(payload: MissionCreate) -> None:
 
 
 def create_mission(db: Session, payload: MissionCreate) -> Mission:
-    overrides = {"app_rate": payload.app_rate}
+    overrides = {}
+    if payload.app_rate is not None:
+        overrides["app_rate"] = payload.app_rate
     if payload.cruise_speed_ms is not None:
         overrides["speed"] = payload.cruise_speed_ms
     if payload.margin_m is not None:
@@ -75,7 +125,6 @@ def compute_mission(db: Session, mission: Mission) -> Mission:
 
         drone_name = mission.drone_name or "DJI Agras T30"
 
-        controller = MissionController()
         stored_overrides = {}
         if mission.overrides_json:
             try:
@@ -85,6 +134,15 @@ def compute_mission(db: Session, mission: Mission) -> Mission:
 
         overrides = {"swath": mission.spray_width, **stored_overrides}
 
+        if ugv_polyline:
+            controller = DynamicMissionController(
+                ugv_polyline=ugv_polyline,
+                ugv_speed=ugv_speed,
+                ugv_t_service=ugv_t_service,
+            )
+        else:
+            controller = StaticMissionController()
+
         result = controller.run_mission_planning(
             db=db,
             polygon_points=exterior,
@@ -93,9 +151,6 @@ def compute_mission(db: Session, mission: Mission) -> Mission:
             base_point=base_point,
             strategy_name=mission.strategy,
             obstacle_polygons=holes if holes else None,
-            ugv_polyline=ugv_polyline,
-            ugv_speed=ugv_speed,
-            ugv_t_service=ugv_t_service,
         )
 
         mission_cycles = result.get("mission_cycles", [])

@@ -35,9 +35,22 @@ class Drone(Base):
 
     # Rociado
     spray_flow_rate_lpm = Column(Float, nullable=False)
-    spray_swath_m = Column(Float, nullable=False)
+    spray_swath_min_m = Column(Float, nullable=False, default=4.0)  
+    spray_swath_max_m = Column(Float, nullable=False, default=9.0)
     spray_height_m = Column(Float, nullable=False)
     spray_pump_power_w = Column(Float, nullable=False, default=200.0)
+
+    #App rate
+    app_rate_default_l_ha = Column(Float, nullable=False, default=10.0)
+    app_rate_min_l_ha = Column(Float, nullable=False, default=3.0)
+    app_rate_max_l_ha = Column(Float, nullable=False, default=50.0)
+
+    # Cinematica horizontal (aceleración/desaceleración)
+    # Modelo semiempírico, no especificación oficial del fabricante.
+    accel_horizontal_ms2 = Column(Float, nullable=False, default=1.5)
+    decel_horizontal_ms2 = Column(Float, nullable=False, default=1.5)
+    power_accel_factor = Column(Float, nullable=False, default=1.15)
+    power_decel_factor = Column(Float, nullable=False, default=1.05)
 
     # Operacional
     battery_charge_time_min = Column(Float, nullable=False, default=30.0)

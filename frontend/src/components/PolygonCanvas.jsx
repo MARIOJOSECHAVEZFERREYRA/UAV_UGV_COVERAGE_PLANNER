@@ -497,7 +497,7 @@ export default function PolygonCanvas({
           />
         )}
 
-        {safeZone?.length >= 3 && highlight === 'ferry' && (
+        {safeZone?.length >= 3 && highlight !== 'ferry' && (
           <polyline
             points={[...safeZone, safeZone[0]].map(([x, y]) => mToSVG(x, y).join(',')).join(' ')}
             fill="none"

@@ -1,4 +1,4 @@
-export default function IntersectionWarning() {
+export default function IntersectionWarning({ message }) {
   return (
     <div
       style={{
@@ -18,7 +18,7 @@ export default function IntersectionWarning() {
         whiteSpace: 'nowrap',
       }}
     >
-      Invalid shape: polygon edges cannot intersect
+      {message ?? 'Invalid shape: polygon edges cannot intersect'}
     </div>
   )
 }

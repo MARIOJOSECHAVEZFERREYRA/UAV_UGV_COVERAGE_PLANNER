@@ -8,14 +8,14 @@ from ..polygon.path_assembler import PathAssembler
 
 class MissionPlannerStrategy(ABC):
     @abstractmethod
-    def optimize(self, polygon, swath_width, base_point=None, obstacle_polygons=None,
-                 energy_model=None, rendezvous_planner=None):
+    def optimize(self, polygon, swath_width, base_point=None,
+                 energy_model=None, rendezvous_planner=None, w_rv=0.5):
         pass
 
 
 class GeneticStrategy(MissionPlannerStrategy):
-    def optimize(self, polygon, swath_width, base_point=None, obstacle_polygons=None,
-                 energy_model=None, rendezvous_planner=None):
+    def optimize(self, polygon, swath_width, base_point=None,
+                 energy_model=None, rendezvous_planner=None, w_rv=0.5):
         planner = BoustrophedonPlanner(spray_width=swath_width)
 
         num_vertices = len(list(polygon.exterior.coords))
@@ -35,6 +35,7 @@ class GeneticStrategy(MissionPlannerStrategy):
             early_stopping_patience=50,
             energy_model=energy_model,
             rendezvous_planner=rendezvous_planner,
+            w_rv=w_rv,
         )
 
         best_solution = optimizer.optimize(polygon, base_point=base_point)
@@ -58,10 +59,11 @@ class GeneticStrategy(MissionPlannerStrategy):
 
 
 class SimpleGridStrategy(MissionPlannerStrategy):
-    def optimize(self, polygon, swath_width, base_point=None, obstacle_polygons=None,
-                 energy_model=None, rendezvous_planner=None):
+    def optimize(self, polygon, swath_width, base_point=None,
+                 energy_model=None, rendezvous_planner=None, w_rv=0.5):
         planner = BoustrophedonPlanner(spray_width=swath_width)
         obstacle_union = build_obstacle_union(polygon)
+        ugv_poly = rendezvous_planner.ugv_polyline if rendezvous_planner else None
 
         candidates = []
 
@@ -78,7 +80,7 @@ class SimpleGridStrategy(MissionPlannerStrategy):
             if not sweep_segments:
                 continue
 
-            assembler = PathAssembler(polygon)
+            assembler = PathAssembler(polygon, ugv_polyline=ugv_poly, ugv_bias=0.3)
             assembly_result = assembler.assemble_connected(sweep_segments)
 
             route_segments = assembly_result.get("route_segments", [])
@@ -113,6 +115,8 @@ class SimpleGridStrategy(MissionPlannerStrategy):
                 "combined_path": [],
                 "planner_metrics": {},
                 "route_distances": {},
+                "rv_count": 0,
+                "rv_wait": 0.0,
                 "metrics": {},
                 "gen_stats": [],
             }
@@ -125,6 +129,8 @@ class SimpleGridStrategy(MissionPlannerStrategy):
             "combined_path": best["combined_path"],
             "planner_metrics": best["planner_metrics"],
             "route_distances": best["route_distances"],
+            "rv_count": 0,
+            "rv_wait": 0.0,
             "metrics": best["metrics"],
             "gen_stats": [],
         }

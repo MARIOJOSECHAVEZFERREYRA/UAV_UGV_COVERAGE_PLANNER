@@ -3,6 +3,9 @@ import math
 from shapely.geometry import LineString
 import numpy as np
 
+_SNAP_THRESHOLD = 0.6   # endpoint must be at most this fraction of d_current from base
+_SNAP_LOOKAHEAD = 2     # max atomic segments to look ahead for a near-base landing
+
 from ..drone.energy_model import DroneEnergyModel
 from ..polygon.path_assembler import PathAssembler
 
@@ -38,10 +41,14 @@ class MissionSegmenter:
     - splits the mission into cycles according to battery/liquid constraints
     """
 
-    def __init__(self, drone, target_rate_l_ha=20.0, work_speed_kmh=None, swath_width=None):
+    def __init__(self, drone, target_rate_l_ha=20.0, work_speed_kmh=None, swath_width=None,
+                 energy_model=None):
         self.drone = drone
         self.rate_l_ha = target_rate_l_ha
-        self.energy_model = DroneEnergyModel(drone)
+        # Accept an externally-created DroneEnergyModel so the controller can
+        # inject the shared instance. Falls back to creating one if not provided
+        # (e.g. when MissionSegmenter is used directly in tests or scripts).
+        self.energy_model = energy_model if energy_model is not None else DroneEnergyModel(drone)
 
         if work_speed_kmh is not None:
             self.speed_kmh = work_speed_kmh
@@ -52,7 +59,7 @@ class MissionSegmenter:
         if swath_width is not None:
             self.swath_width = swath_width
         else:
-            self.swath_width = drone.spray_swath_m
+            self.swath_width = drone.spray_swath_max_m
 
         self.liters_per_meter = (self.rate_l_ha * self.swath_width) / 10000.0
         self.tank_capacity = drone.mass_tank_full_kg
@@ -163,7 +170,6 @@ class MissionSegmenter:
         assembler = PathAssembler(polygon)
 
         usable_energy = self.energy_model.usable_energy_wh()
-        reserve_wh = self.energy_model.reserve_wh_static()
 
         energy_remaining = usable_energy
         liquid_remaining = self.tank_capacity
@@ -188,18 +194,11 @@ class MissionSegmenter:
             liq_step = self._segment_liquid_use(seg_type, dist_step)
             energy_step = self._segment_energy(seg_type, dist_step, liquid_remaining)
 
-            liquid_after = liquid_remaining - liq_step
-
             return_path, _ = assembler.safe_connection(p2, base_point)
             dist_return = self._path_length(return_path)
-            energy_return = self.energy_model.energy_transit(
-                dist_return,
-                max(liquid_after, 0.0),
-            )
 
-            can_do = (
-                energy_remaining - energy_step - energy_return >= reserve_wh
-                and liquid_after >= 0.0
+            can_do = self.energy_model.feasible_after_segment_static(
+                energy_remaining, liquid_remaining, energy_step, liq_step, dist_return
             )
 
             # Guard: always execute first atomic segment of an empty cycle
@@ -215,6 +214,76 @@ class MissionSegmenter:
                 liquid_remaining -= liq_step
                 i += 1
             else:
+                # --- Base-side snapping ---
+                # Before closing the cycle at the current position, look up to
+                # _SNAP_LOOKAHEAD atomic segments ahead.  In a boustrophedon a
+                # strip that ends far from the base is typically followed by a
+                # short ferry + a return strip heading back toward the base.
+                # If a nearby segment endpoint is significantly closer to the
+                # base (< _SNAP_THRESHOLD * current distance) AND the drone can
+                # afford all lookahead segments plus the return from there, snap
+                # to that endpoint before closing.  This eliminates the long
+                # deadheads that occur when a cycle closes on the "far" side.
+                current_end = current_cycle_segments[-1]["p2"] if current_cycle_segments else base_point
+                d_current = math.hypot(current_end[0] - base_point[0],
+                                       current_end[1] - base_point[1])
+
+                snapped = False
+                if d_current > 1e-3:
+                    e_acc = energy_remaining
+                    q_acc = liquid_remaining
+                    snap_buffer = []
+
+                    for j in range(i, min(i + _SNAP_LOOKAHEAD, len(atomic_segments))):
+                        look = atomic_segments[j]
+                        ltype = look["segment_type"]
+                        ldist = look.get("distance_m",
+                                         self._path_length([look["p1"], look["p2"]]))
+                        le = self._segment_energy(ltype, ldist, q_acc)
+                        lq = self._segment_liquid_use(ltype, ldist)
+
+                        e_acc -= le
+                        q_acc = max(0.0, q_acc - lq)
+                        snap_buffer.append((look, le, lq))
+
+                        d_end = math.hypot(look["p2"][0] - base_point[0],
+                                           look["p2"][1] - base_point[1])
+
+                        if d_end >= d_current * _SNAP_THRESHOLD:
+                            continue  # not significantly closer — keep looking
+
+                        # Near-base candidate found.  Check feasibility:
+                        # remaining resources after lookahead must cover the
+                        # return flight plus the operational reserve.
+                        snap_return_path, _ = assembler.safe_connection(
+                            look["p2"], base_point
+                        )
+                        d_snap_ret = self._path_length(snap_return_path)
+                        e_snap_ret = self.energy_model.energy_to_service_static(
+                            d_snap_ret, max(q_acc, 0.0)
+                        )
+                        e_reserve = self.energy_model.reserve_wh_static()
+
+                        if e_acc - e_snap_ret >= e_reserve and q_acc >= 0.0:
+                            # Affordable snap: execute the lookahead segments
+                            for snap_seg, snap_e, snap_q in snap_buffer:
+                                current_cycle_segments.append({
+                                    "p1": snap_seg["p1"],
+                                    "p2": snap_seg["p2"],
+                                    "spraying": snap_seg["spraying"],
+                                    "segment_type": snap_seg["segment_type"],
+                                    "distance_m": float(snap_seg.get(
+                                        "distance_m",
+                                        self._path_length([snap_seg["p1"], snap_seg["p2"]]),
+                                    )),
+                                })
+                                energy_remaining -= snap_e
+                                liquid_remaining = max(0.0, liquid_remaining - snap_q)
+                            i += len(snap_buffer)
+                            snapped = True
+                        break  # stop lookahead regardless (either snapped or not affordable)
+
+                # Close the cycle (with or without snap)
                 cycle_start = current_cycle_segments[0]["p1"]
                 cycle_end = current_cycle_segments[-1]["p2"]
 
@@ -228,8 +297,12 @@ class MissionSegmenter:
                 energy_remaining = usable_energy
                 liquid_remaining = self.tank_capacity
 
-                commute_path, _ = assembler.safe_connection(base_point, p1)
-                dist_commute = self._path_length(commute_path)
+                if not snapped:
+                    commute_path, _ = assembler.safe_connection(base_point, p1)
+                    dist_commute = self._path_length(commute_path)
+                else:
+                    commute_path, _ = assembler.safe_connection(base_point, atomic_segments[i]["p1"])
+                    dist_commute = self._path_length(commute_path)
                 energy_remaining -= self.energy_model.energy_transit(
                     dist_commute,
                     liquid_remaining,
@@ -289,6 +362,9 @@ class MissionSegmenter:
 
         assembler = PathAssembler(polygon)
         usable_energy = self.energy_model.usable_energy_wh()
+        # reserve_wh is used only when passing e_reserve to find_best_rendezvous;
+        # the feasibility predicate (feasible_after_segment_dynamic) applies its
+        # own reserve internally via DroneEnergyModel.reserve_wh_mobile().
         reserve_wh = self.energy_model.reserve_wh_mobile()
         v_uav = float(self.drone.speed_max_ms)
 
@@ -350,16 +426,11 @@ class MissionSegmenter:
                 e_reserve=reserve_wh,
             )
 
-            if rv_after['feasible']:
-                e_return_estimate = self.energy_model.energy_transit(
-                    rv_after['d_uav'], liquid_after
-                )
-            else:
-                e_return_estimate = float('inf')
-
-            can_do = (
-                energy_remaining - energy_step - e_return_estimate >= reserve_wh
-                and liquid_after >= 0.0
+            # float('inf') signals "no feasible rendezvous exists"; the predicate
+            # will return False because energy_to_service_dynamic(inf, ...) = inf.
+            dist_to_rv = rv_after['d_uav'] if rv_after['feasible'] else float('inf')
+            can_do = self.energy_model.feasible_after_segment_dynamic(
+                energy_remaining, liquid_remaining, energy_step, liq_step, dist_to_rv
             )
 
             # Guardia: siempre ejecutar el primer segmento de un ciclo vacio
@@ -395,8 +466,19 @@ class MissionSegmenter:
             )
 
             if not rv['feasible']:
-                # Fallback: no hay rendezvous factible, continuar de todos modos
-                # (no deberia ocurrir si la reserva esta bien calibrada)
+                # Fallback: no hay rendezvous factible — continuar el segmento de todos modos.
+                #
+                # TODO (TASK 3): este fallback viola el criterio energético centralizado
+                # introducido en TASK 1 (feasible_after_segment_dynamic). El UAV puede
+                # continuar ejecutando trabajo aunque ya no le quede energía suficiente
+                # para llegar a ningún punto de servicio, produciendo una misión
+                # físicamente no ejecutable.
+                #
+                # En TASK 3 decidir la política correcta entre:
+                #   a) Abortar la misión y propagar un error al controlador.
+                #   b) Cerrar el ciclo en el último punto conocido y detener la segmentación.
+                #   c) Escalar la condición al controlador para que decida (e.g. excepción
+                #      MissionInfeasibleError con el estado actual del UAV y del UGV).
                 atomic = self._path_to_segments(normalized_path, seg_type, spraying)
                 current_cycle_segments.extend(atomic)
                 energy_remaining -= energy_step
@@ -412,10 +494,16 @@ class MissionSegmenter:
             dh_to_rv_path, _ = assembler.safe_connection(uav_pos, rv_point)
             dh_to_rv = self._path_to_segments(dh_to_rv_path, 'deadhead', False)
 
-            # Cerrar ciclo actual
+            # Cerrar ciclo actual.
+            # rv es el segundo find_best_rendezvous (CONFIRMACION de servicio),
+            # no el rv_after del lookahead (que solo se usó para can_do).
+            # max(0.0, ...) garantiza que rv_wait_s nunca sea negativo aunque
+            # haya discrepancias de punto flotante en los tiempos de llegada.
             cycle_all_segs = current_cycle_segments + dh_to_rv
             cycle_path = self._segments_to_path(cycle_all_segs)
-            cycles.append(self._make_cycle(cycle_path, cycle_all_segs, rv_point))
+            cycle_dict = self._make_cycle(cycle_path, cycle_all_segs, rv_point)
+            cycle_dict['rv_wait_s'] = max(0.0, rv['t_wait_uav'])
+            cycles.append(cycle_dict)
 
             # Actualizar tiempo: vuelo al rv + espera + servicio
             t += rv['flight_time_uav']

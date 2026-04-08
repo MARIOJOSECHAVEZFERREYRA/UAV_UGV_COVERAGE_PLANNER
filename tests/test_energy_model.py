@@ -38,10 +38,16 @@ def drone():
         turn_duration_s=10.0,
         turn_power_factor=1.1,
         spray_flow_rate_lpm=8.0,
-        spray_swath_m=9.0,
+        spray_swath_min_m=4.0,
+        spray_swath_max_m=9.0,
         spray_height_m=2.5,
         spray_pump_power_w=200.0,
         service_time_s=120.0,
+        # Semiempirical kinematic extension (not official DJI spec)
+        accel_horizontal_ms2=1.5,
+        decel_horizontal_ms2=1.5,
+        power_accel_factor=1.15,
+        power_decel_factor=1.05,
     )
 
 
@@ -119,12 +125,15 @@ class TestPhysicsBase:
 class TestEnergyCosts:
 
     def test_energy_straight_basic(self, model):
-        # 100 m at full tank (30 L):
-        #   t = 100/5 = 20 s
-        #   P_spray = hover_power(30) + 200 ≈ 10808 + 200 = 11008 W
-        #   E = 11008 * 20 / 3600 ≈ 61.16 Wh
+        # 100 m at full tank (30 L), three-phase profile:
+        #   v_c=5 m/s, a_acc=a_dec=1.5 m/s²
+        #   d_acc = 5²/(2·1.5) = 8.333 m  <  100 m  → cruise phase exists
+        #   t_acc = 5/1.5 = 10/3 s,  t_dec = 10/3 s
+        #   d_cruise = 100 - 16.667 = 83.333 m,  t_cruise = 50/3 s
+        #   E = P_spray * (1.15·10/3 + 50/3 + 1.05·10/3) / 3600
+        #     = P_spray * 24 / 3600
         p_spray = _hover_ref(66.5) + 200.0
-        expected = p_spray * (100.0 / 5.0) / 3600.0
+        expected = p_spray * 24.0 / 3600.0
         assert model.energy_straight(100.0, 30.0) == pytest.approx(expected, rel=0.01)
 
     def test_energy_straight_longer_costs_more(self, model):
@@ -155,14 +164,15 @@ class TestEnergyCosts:
         assert model.energy_turn(180.0, 30.0) > model.energy_turn(180.0, 0.0)
 
     def test_energy_transit_uses_max_speed(self, model):
-        # Transit uses speed_max (10 m/s), not speed_cruise (5 m/s).
-        # For 100 m at full tank:
-        #   t_transit = 100/10 = 10 s  (half the time of a cruise segment)
-        #   E_transit = hover_power(30) * 10 / 3600 ≈ 30.025 Wh
-        #   E_cruise_speed = hover_power(30) * 20 / 3600 ≈ 60.05 Wh (hypothetical)
-        # The transit result must be half the cruise-speed result (no pump, double speed)
+        # Transit uses speed_max (10 m/s), three-phase profile, no pump power.
+        # For 100 m at full tank, a=1.5 m/s²:
+        #   d_acc = 10²/(2·1.5) = 33.333 m  <  100 m  → cruise phase exists
+        #   t_acc = 10/1.5 = 20/3 s,  t_dec = 20/3 s
+        #   d_cruise = 100 - 66.667 = 33.333 m,  t_cruise = 10/3 s
+        #   E = P_cruise * (1.15·20/3 + 10/3 + 1.05·20/3) / 3600
+        #     = P_cruise * 18 / 3600
         p_cruise = _hover_ref(66.5)
-        expected_transit = p_cruise * (100.0 / 10.0) / 3600.0
+        expected_transit = p_cruise * 18.0 / 3600.0
         assert model.energy_transit(100.0, 30.0) == pytest.approx(expected_transit, rel=0.01)
 
     def test_energy_landing_takeoff(self, model):
@@ -175,29 +185,133 @@ class TestEnergyCosts:
 
 
 # ---------------------------------------------------------------------------
+# TestStraightProfile  (semiempirical kinematic extension)
+# ---------------------------------------------------------------------------
+
+class TestStraightProfile:
+    """
+    Unit tests for _straight_profile and the three-phase energy model.
+    Validates the semiempirical extension; not an official manufacturer spec.
+    """
+
+    def test_long_segment_has_cruise_phase(self, model):
+        # 100 m spray segment: d_acc+d_dec = 16.667 m < 100 m → cruise exists
+        t_acc, t_cruise, t_dec, v_peak = model._straight_profile(
+            100.0, 5.0, 1.5, 1.5
+        )
+        assert t_cruise > 0.0
+        assert v_peak == pytest.approx(5.0, rel=0.001)
+
+    def test_short_segment_no_cruise_phase(self, model):
+        # 10 m at v=5, a=1.5: d_acc+d_dec = 16.667 m > 10 m → no cruise
+        t_acc, t_cruise, t_dec, v_peak = model._straight_profile(
+            10.0, 5.0, 1.5, 1.5
+        )
+        assert t_cruise == pytest.approx(0.0, abs=1e-12)
+        assert v_peak < 5.0
+
+    def test_short_segment_distance_conservation(self, model):
+        # Reconstructed distance from v_peak must equal input distance
+        d = 10.0
+        t_acc, t_cruise, t_dec, v_peak = model._straight_profile(d, 5.0, 1.5, 1.5)
+        d_reconstructed = 0.5 * v_peak * t_acc + 0.5 * v_peak * t_dec
+        assert d_reconstructed == pytest.approx(d, rel=0.001)
+
+    def test_long_segment_distance_conservation(self, model):
+        # For long segment, sum of phase distances must equal total
+        d = 100.0
+        v = 5.0
+        a = 1.5
+        t_acc, t_cruise, t_dec, v_peak = model._straight_profile(d, v, a, a)
+        d_acc = 0.5 * v_peak * t_acc
+        d_dec = 0.5 * v_peak * t_dec
+        d_cruise = v_peak * t_cruise
+        assert d_acc + d_cruise + d_dec == pytest.approx(d, rel=0.001)
+
+    def test_zero_distance_profile(self, model):
+        t_acc, t_cruise, t_dec, v_peak = model._straight_profile(0.0, 5.0, 1.5, 1.5)
+        assert t_acc == pytest.approx(0.0, abs=1e-12)
+        assert t_cruise == pytest.approx(0.0, abs=1e-12)
+        assert t_dec == pytest.approx(0.0, abs=1e-12)
+        assert v_peak == pytest.approx(0.0, abs=1e-12)
+
+    def test_three_phase_energy_greater_than_constant_speed(self, model):
+        # Acc/dec factors > 1 mean 3-phase costs MORE than naive constant-speed model
+        d = 100.0
+        reagent = 15.0
+        p_spray = model.spray_power(reagent)
+        naive_wh = p_spray * (d / model.drone.speed_cruise_ms) / 3600.0
+        assert model.energy_straight(d, reagent) > naive_wh
+
+    def test_transit_three_phase_energy_greater_than_constant_speed(self, model):
+        d = 100.0
+        reagent = 15.0
+        p_cruise = model.cruise_power(reagent)
+        naive_wh = p_cruise * (d / model.drone.speed_max_ms) / 3600.0
+        assert model.energy_transit(d, reagent) > naive_wh
+
+    def test_time_straight_longer_than_constant_speed(self, model):
+        # Three-phase total time > constant-speed time (acc/dec add overhead)
+        d = 100.0
+        t_3phase = model.time_straight(d)
+        t_naive = d / model.drone.speed_cruise_ms
+        assert t_3phase > t_naive
+
+    def test_time_transit_longer_than_constant_speed(self, model):
+        d = 100.0
+        t_3phase = model.time_transit(d)
+        t_naive = d / model.drone.speed_max_ms
+        assert t_3phase > t_naive
+
+    def test_transit_energy_below_straight_same_conditions(self, model):
+        # energy_transit has no pump load; energy_straight adds spray_pump_power_w.
+        # For same distance and reagent, transit must cost less than straight.
+        for d in (50.0, 100.0, 500.0):
+            assert model.energy_transit(d, 15.0) < model.energy_straight(d, 15.0)
+
+    def test_short_segment_energy_numerical(self, model):
+        # 10 m spray segment: d < d_acc + d_dec = 16.667 m -> no cruise
+        #   a = 1.5 m/s², v_peak = sqrt(1.5 * 10) = sqrt(15) ≈ 3.873 m/s
+        #   t_acc = v_peak / 1.5,  t_dec = v_peak / 1.5
+        #   E = (k_acc * t_acc + k_dec * t_dec) * P_spray(15) / 3600
+        import math
+        v_peak = math.sqrt(1.5 * 10.0)
+        t_acc = v_peak / 1.5
+        t_dec = v_peak / 1.5
+        p_spray = model.spray_power(15.0)
+        expected = (1.15 * p_spray * t_acc + 1.05 * p_spray * t_dec) / 3600.0
+        assert model.energy_straight(10.0, 15.0) == pytest.approx(expected, rel=0.001)
+
+
+# ---------------------------------------------------------------------------
 # TestReagent
 # ---------------------------------------------------------------------------
 
 class TestReagent:
 
     def test_reagent_consumed_basic(self, model):
-        # 100 m at 5 m/s -> t = 20 s
-        # Q = 8 L/min * 20 s / 60 = 2.6667 L
-        expected = 8.0 * (100.0 / 5.0) / 60.0
-        assert model.reagent_consumed(100.0) == pytest.approx(expected, rel=0.01)
+        # 100 m, three-phase profile: time_straight(100) = 10/3 + 50/3 + 10/3 = 70/3 s
+        # Q = 8 L/min * (70/3) s / 60 = 8 * 70 / 180 ≈ 3.111 L
+        # Fixed-flow-rate pump assumption: reagent = flow * actual_flight_time / 60
+        expected = 8.0 * model.time_straight(100.0) / 60.0
+        assert model.reagent_consumed(100.0) == pytest.approx(expected, rel=0.001)
 
-    def test_reagent_consumed_proportional_to_distance(self, model):
-        # Linear with distance: doubling distance doubles reagent use
-        q100 = model.reagent_consumed(100.0)
-        q200 = model.reagent_consumed(200.0)
-        assert q200 == pytest.approx(2.0 * q100, rel=0.01)
+    def test_reagent_consumed_uses_three_phase_time(self, model):
+        # Fixed-flow pump: Q = spray_flow_rate_lpm * time_straight(d) / 60
+        # Consistent with energy_straight which also integrates over three-phase time.
+        for d in (10.0, 50.0, 100.0, 500.0):
+            expected = model.drone.spray_flow_rate_lpm * model.time_straight(d) / 60.0
+            assert model.reagent_consumed(d) == pytest.approx(expected, rel=0.001)
 
-    def test_full_tank_depletion(self, model):
-        # Solve: 30 L = 8 * (d / 5) / 60  =>  d = 30 * 300 / 8 = 1125 m
-        # Verify that consuming 30 L takes approximately 1125 m
-        expected_distance = 1125.0
-        consumed = model.reagent_consumed(expected_distance)
-        assert consumed == pytest.approx(30.0, rel=0.01)
+    def test_reagent_consumed_greater_than_naive(self, model):
+        # Three-phase time > d/v_cruise, so reagent > naive constant-speed estimate
+        naive = model.drone.spray_flow_rate_lpm * (100.0 / model.drone.speed_cruise_ms) / 60.0
+        assert model.reagent_consumed(100.0) > naive
+
+    def test_reagent_consumed_monotone(self, model):
+        # More distance -> more reagent (monotone, not necessarily linear)
+        assert model.reagent_consumed(200.0) > model.reagent_consumed(100.0)
+        assert model.reagent_consumed(100.0) > model.reagent_consumed(50.0)
 
 
 # ---------------------------------------------------------------------------
@@ -207,10 +321,10 @@ class TestReagent:
 class TestCanContinue:
 
     def _threshold(self, model, distance_m, reagent_l):
-        """Exact energy threshold used by can_continue."""
+        """Exact energy threshold used by can_continue (reserve = reserve_wh_mobile = 20%)."""
         transit = model.energy_transit(distance_m, reagent_l)
         lto = model.energy_landing_takeoff(reagent_l)
-        reserve = model.usable_energy_wh() * 0.10
+        reserve = model.reserve_wh_mobile()
         return transit + lto + reserve
 
     def test_can_continue_with_full_resources(self, model):
@@ -240,6 +354,130 @@ class TestCanContinue:
         reagent_l = 15.0
         threshold = self._threshold(model, distance_m, reagent_l)
         assert model.can_continue(threshold - 1.0, reagent_l, distance_m) is False
+
+    def test_cannot_continue_infinite_distance(self, model):
+        # No reachable rendezvous (dist = inf) -> always False
+        usable = model.usable_energy_wh()
+        assert model.can_continue(usable, 30.0, float('inf')) is False
+
+
+# ---------------------------------------------------------------------------
+# TestFeasibilityMethods
+# ---------------------------------------------------------------------------
+
+class TestFeasibilityMethods:
+    """
+    Tests for feasible_after_segment_static and feasible_after_segment_dynamic.
+
+    Both methods answer: "if I execute this segment now, will I still be able
+    to reach a service point afterwards?"
+    """
+
+    # --- feasible_after_segment_static ---
+
+    def test_static_feasible_full_resources(self, model):
+        # Full battery, full tank, short segment, close base -> True
+        usable = model.usable_energy_wh()
+        energy_step = model.energy_straight(50.0, 30.0)
+        liq_step = 50.0 * (8.0 / (5.0 * 60.0))   # 50 m at cruise
+        assert model.feasible_after_segment_static(
+            usable, 30.0, energy_step, liq_step, 100.0
+        ) is True
+
+    def test_static_infeasible_no_liquid(self, model):
+        # liq_step exceeds available liquid -> liquid_after < 0 -> False
+        usable = model.usable_energy_wh()
+        assert model.feasible_after_segment_static(
+            usable, 0.001, 0.0, 0.002, 0.0
+        ) is False
+
+    def test_static_infeasible_base_unreachable(self, model):
+        # Almost no battery left, huge return distance -> False
+        assert model.feasible_after_segment_static(
+            10.0, 15.0, 0.0, 0.0, 50000.0
+        ) is False
+
+    def test_static_barely_feasible(self, model):
+        # Provide just above the required threshold -> True
+        dist_to_base = 200.0
+        reagent_l = 15.0
+        e_service = model.energy_to_service_static(dist_to_base, reagent_l)
+        reserve = model.reserve_wh_static()
+        energy_step = model.energy_transit(50.0, reagent_l)
+        # Add a small epsilon to avoid floating-point subtraction going below reserve
+        energy_rem = energy_step + e_service + reserve + 1e-6
+        assert model.feasible_after_segment_static(
+            energy_rem, reagent_l, energy_step, 0.0, dist_to_base
+        ) is True
+
+    def test_static_just_below_threshold(self, model):
+        dist_to_base = 200.0
+        reagent_l = 15.0
+        e_service = model.energy_to_service_static(dist_to_base, reagent_l)
+        reserve = model.reserve_wh_static()
+        energy_step = model.energy_transit(50.0, reagent_l)
+        energy_rem = energy_step + e_service + reserve - 0.01
+        assert model.feasible_after_segment_static(
+            energy_rem, reagent_l, energy_step, 0.0, dist_to_base
+        ) is False
+
+    # --- feasible_after_segment_dynamic ---
+
+    def test_dynamic_feasible_full_resources(self, model):
+        usable = model.usable_energy_wh()
+        energy_step = model.energy_straight(50.0, 30.0)
+        liq_step = 50.0 * (8.0 / (5.0 * 60.0))
+        assert model.feasible_after_segment_dynamic(
+            usable, 30.0, energy_step, liq_step, 100.0
+        ) is True
+
+    def test_dynamic_infeasible_no_rv(self, model):
+        # No feasible rendezvous -> dist_to_rv = inf -> False
+        usable = model.usable_energy_wh()
+        assert model.feasible_after_segment_dynamic(
+            usable, 30.0, 0.0, 0.0, float('inf')
+        ) is False
+
+    def test_dynamic_infeasible_no_liquid(self, model):
+        # liq_step exceeds available liquid -> liquid_after < 0 -> False
+        usable = model.usable_energy_wh()
+        assert model.feasible_after_segment_dynamic(
+            usable, 0.001, 0.0, 0.002, 50.0
+        ) is False
+
+    def test_dynamic_includes_lto_vs_static(self, model):
+        # For the same distance, dynamic threshold is strictly higher than static
+        # because it adds energy_landing_takeoff on top of transit.
+        dist = 200.0
+        reagent_l = 15.0
+        e_static = model.energy_to_service_static(dist, reagent_l)
+        e_dynamic = model.energy_to_service_dynamic(dist, reagent_l)
+        assert e_dynamic > e_static
+        assert e_dynamic == pytest.approx(
+            e_static + model.energy_landing_takeoff(reagent_l), rel=0.01
+        )
+
+    def test_dynamic_barely_feasible(self, model):
+        dist_to_rv = 200.0
+        reagent_l = 15.0
+        e_service = model.energy_to_service_dynamic(dist_to_rv, reagent_l)
+        reserve = model.reserve_wh_mobile()
+        energy_step = model.energy_transit(50.0, reagent_l)
+        energy_rem = energy_step + e_service + reserve
+        assert model.feasible_after_segment_dynamic(
+            energy_rem, reagent_l, energy_step, 0.0, dist_to_rv
+        ) is True
+
+    def test_dynamic_just_below_threshold(self, model):
+        dist_to_rv = 200.0
+        reagent_l = 15.0
+        e_service = model.energy_to_service_dynamic(dist_to_rv, reagent_l)
+        reserve = model.reserve_wh_mobile()
+        energy_step = model.energy_transit(50.0, reagent_l)
+        energy_rem = energy_step + e_service + reserve - 0.01
+        assert model.feasible_after_segment_dynamic(
+            energy_rem, reagent_l, energy_step, 0.0, dist_to_rv
+        ) is False
 
 
 # ---------------------------------------------------------------------------

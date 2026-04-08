@@ -95,6 +95,67 @@ export function wouldSelfIntersect(pts, newPt) {
 }
 
 /**
+ * Unsigned area in m² for a flat [x,y] open ring (shoelace formula).
+ */
+export function polygonArea(pts) {
+  let a = 0
+  const n = pts.length
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n
+    a += pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1]
+  }
+  return Math.abs(a) / 2
+}
+
+/**
+ * Ray-casting point-in-polygon test. pts = open ring [[x,y],...].
+ * Returns true if [px,py] is strictly inside the polygon.
+ */
+export function pointInPolygon([px, py], poly) {
+  let inside = false
+  const n = poly.length
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const [xi, yi] = poly[i]
+    const [xj, yj] = poly[j]
+    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) {
+      inside = !inside
+    }
+  }
+  return inside
+}
+
+/** Returns true if any edge of polyA properly crosses any edge of polyB (open rings). */
+function polygonEdgesCross(polyA, polyB) {
+  const na = polyA.length, nb = polyB.length
+  for (let i = 0; i < na; i++) {
+    for (let j = 0; j < nb; j++) {
+      if (segmentsCross(polyA[i], polyA[(i + 1) % na], polyB[j], polyB[(j + 1) % nb])) return true
+    }
+  }
+  return false
+}
+
+/**
+ * Returns true if inner polygon is fully contained within outer polygon.
+ * Fails if any edge of inner crosses outer, or any vertex of inner is outside outer.
+ */
+export function isPolygonInside(inner, outer) {
+  if (polygonEdgesCross(inner, outer)) return false
+  return inner.every(pt => pointInPolygon(pt, outer))
+}
+
+/**
+ * Returns true if two polygons share any interior area:
+ * crossing edges, one fully inside the other, or identical.
+ */
+export function polygonsOverlap(polyA, polyB) {
+  if (polygonEdgesCross(polyA, polyB)) return true
+  if (pointInPolygon(polyA[0], polyB)) return true
+  if (pointInPolygon(polyB[0], polyA)) return true
+  return false
+}
+
+/**
  * Split a flat waypoint array into typed runs for layered rendering.
  *
  * Returns:

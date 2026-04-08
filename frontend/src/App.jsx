@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useCallback } from 'react'
 import { C } from './utils/colors.js'
 import MapView from './components/MapView.jsx'
 import PolygonCanvas from './components/PolygonCanvas.jsx'
@@ -19,6 +19,8 @@ export default function App() {
   const [droneSpecsName, setDroneSpecsName] = useState(null)
   const [panelOpen, setPanelOpen] = useState(true)
 
+  const [simEnabled, setSimEnabled] = useState(false)
+
   const {
     waypoints,
     activeMission,
@@ -26,8 +28,13 @@ export default function App() {
     setHighlight,
     resetMission,
     dismissSimulation,
-    handleMissionReady,
+    handleMissionReady: _handleMissionReady,
   } = useMissionState()
+
+  const handleMissionReady = useCallback((mission, wps) => {
+    setSimEnabled(false)
+    _handleMissionReady(mission, wps)
+  }, [_handleMissionReady])
 
   const {
     mode,
@@ -51,7 +58,7 @@ export default function App() {
     vehicles, connected, simTimeS,
     playbackSpeed, isPaused,
     setPlayback, pause, resume, restart, disconnect,
-  } = useSimulation(activeMission?.id, activeMission?.status)
+  } = useSimulation(activeMission?.id, activeMission?.status, simEnabled)
 
   const previewPoints = mode !== MODE.NONE ? drawingPoints : []
 
@@ -108,6 +115,9 @@ export default function App() {
               onLoadField={handleLoadField}
               onClear={handleClear}
               onMissionReady={handleMissionReady}
+              onStartSim={() => setSimEnabled(true)}
+              onStopSim={() => { disconnect(); setSimEnabled(false) }}
+              simEnabled={simEnabled}
               onViewDroneSpecs={setDroneSpecsName}
             />
           </div>
@@ -191,7 +201,7 @@ export default function App() {
               />
             )}
 
-            {activeMission && (
+            {activeMission && simEnabled && (
               <SimulationBadge
                 connected={connected}
                 simTimeS={simTimeS}
@@ -201,11 +211,11 @@ export default function App() {
                 onPause={pause}
                 onResume={resume}
                 onRestart={restart}
-                onDismiss={() => { disconnect(); dismissSimulation() }}
+                onDismiss={() => { disconnect(); setSimEnabled(false) }}
               />
             )}
 
-            {intersectionWarning && <IntersectionWarning />}
+            {intersectionWarning && <IntersectionWarning message={intersectionWarning} />}
 
             {mode !== MODE.NONE && <DrawingHint mode={mode} />}
           </>

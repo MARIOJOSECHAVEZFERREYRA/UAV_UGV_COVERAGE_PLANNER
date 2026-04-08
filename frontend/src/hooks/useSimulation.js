@@ -15,7 +15,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
  *   restart       — fn() reconnect from the beginning
  *   disconnect    — fn() close WS without clearing mission state
  */
-export function useSimulation(missionId, missionStatus) {
+export function useSimulation(missionId, missionStatus, enabled) {
   const [vehicles, setVehicles] = useState([])
   const [connected, setConnected] = useState(false)
   const [simTimeS, setSimTimeS] = useState(0)
@@ -64,7 +64,7 @@ export function useSimulation(missionId, missionStatus) {
   }, [])
 
   useEffect(() => {
-    if (!missionId || missionStatus !== 'completed') return
+    if (!missionId || missionStatus !== 'completed' || !enabled) return
 
     const ws = new WebSocket(`ws://localhost:8000/simulation/${missionId}`)
     wsRef.current = ws
@@ -82,7 +82,7 @@ export function useSimulation(missionId, missionStatus) {
     ws.onerror = () => setConnected(false)
 
     return () => ws.close()
-  }, [missionId, missionStatus, reconnectKey])
+  }, [missionId, missionStatus, reconnectKey, enabled])
 
   return {
     vehicles,

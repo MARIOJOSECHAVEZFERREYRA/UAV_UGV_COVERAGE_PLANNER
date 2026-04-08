@@ -165,8 +165,12 @@ export default function DroneSpecsView({ droneName, onBack }) {
         </Card>
 
         <Card title="Spray System">
-          <SpecRow label="Swath width" value={specs.spray_swath_m} unit="m" />
+          <SpecRow label="Swath min" value={specs.spray_swath_min_m} unit="m" />
+          <SpecRow label="Swath max" value={specs.spray_swath_max_m} unit="m" />
           <SpecRow label="Flow rate" value={specs.spray_flow_rate_lpm} unit="L/min" />
+          <SpecRow label="Dose default" value={specs.app_rate_default_l_ha} unit="L/ha" />
+          <SpecRow label="Dose min" value={specs.app_rate_min_l_ha} unit="L/ha" />
+          <SpecRow label="Dose max" value={specs.app_rate_max_l_ha} unit="L/ha" />
           <SpecRow label="Operating height" value={specs.spray_height_m} unit="m" />
         </Card>
 

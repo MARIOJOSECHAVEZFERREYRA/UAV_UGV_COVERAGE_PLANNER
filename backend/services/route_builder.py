@@ -35,6 +35,10 @@ class RouteSegment:
     duration_s: float
     energy_cost_wh: float
     reagent_consumed_l: float
+    # Three-phase kinematic phase durations (s). Both 0.0 means no phase info
+    # (service/deadhead segments) → energy drains uniformly in simulation.
+    t_acc_s: float = 0.0
+    t_dec_s: float = 0.0
 
 
 @dataclass
@@ -111,16 +115,28 @@ class UAVRouteBuilder:
                     seg_type = self._classify_segment(p1, p2, is_spraying, base_point)
                 distance = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
 
-                # Compute costs
+                # Compute costs and three-phase timings for visualization accuracy
                 if seg_type == SegmentType.spray:
                     duration = self.energy_model.time_straight(distance)
                     energy_cost = self.energy_model.energy_straight(distance, reagent_remaining)
                     reagent_cost = self.energy_model.reagent_consumed(distance)
+                    t_a, _, t_d, _ = self.energy_model._straight_profile(
+                        distance,
+                        self.drone.speed_cruise_ms,
+                        self.drone.accel_horizontal_ms2,
+                        self.drone.decel_horizontal_ms2,
+                    )
                 else:
                     # ferry or deadhead
                     duration = self.energy_model.time_transit(distance)
                     energy_cost = self.energy_model.energy_transit(distance, reagent_remaining)
                     reagent_cost = 0.0
+                    t_a, _, t_d, _ = self.energy_model._straight_profile(
+                        distance,
+                        self.drone.speed_max_ms,
+                        self.drone.accel_horizontal_ms2,
+                        self.drone.decel_horizontal_ms2,
+                    )
 
                 route_seg = RouteSegment(
                     p1=p1,
@@ -131,6 +147,8 @@ class UAVRouteBuilder:
                     duration_s=duration,
                     energy_cost_wh=energy_cost,
                     reagent_consumed_l=reagent_cost,
+                    t_acc_s=t_a,
+                    t_dec_s=t_d,
                 )
                 segments.append(route_seg)
 

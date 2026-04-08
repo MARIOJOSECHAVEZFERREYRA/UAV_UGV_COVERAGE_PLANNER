@@ -15,8 +15,41 @@ import math
 import time
 from collections.abc import AsyncGenerator
 
+from backend.algorithms.drone.energy_model import DroneEnergyModel
 from backend.schemas.simulation import SegmentType, SimulationFrame, VehicleSimState
 from backend.services.route_builder import VehicleRoute, RouteSegment
+
+
+def _cumulative_energy_frac(seg: RouteSegment, t_norm: float, drone) -> float:
+    """
+    Fraction of seg.energy_cost_wh consumed from segment start to normalized
+    time t_norm ∈ [0, 1], following the three-phase power profile.
+
+    When t_acc_s == t_dec_s == 0 (service/deadhead segments) falls back to
+    linear draining.  Requires drone for power_accel_factor / power_decel_factor.
+    """
+    if (seg.t_acc_s <= 0.0 and seg.t_dec_s <= 0.0) or seg.duration_s <= 0.0:
+        return t_norm
+
+    t = t_norm * seg.duration_s
+    t_a = seg.t_acc_s
+    t_d = seg.t_dec_s
+    t_c = max(0.0, seg.duration_s - t_a - t_d)
+
+    k_a = getattr(drone, 'power_accel_factor', 1.15) if drone else 1.15
+    k_d = getattr(drone, 'power_decel_factor', 1.05) if drone else 1.05
+    total_eff = k_a * t_a + t_c + k_d * t_d
+    if total_eff <= 0.0:
+        return t_norm
+
+    if t <= t_a:
+        eff = k_a * t
+    elif t <= t_a + t_c:
+        eff = k_a * t_a + (t - t_a)
+    else:
+        eff = k_a * t_a + t_c + k_d * (t - t_a - t_c)
+
+    return eff / total_eff
 
 
 class VehicleCursor:
@@ -35,6 +68,7 @@ class VehicleCursor:
         route: VehicleRoute,
         initial_energy_wh: float,
         initial_reagent_l: float,
+        drone=None,
     ):
         self.route = route
         self.seg_idx = 0
@@ -43,6 +77,7 @@ class VehicleCursor:
         self.reagent_l = initial_reagent_l
         self.initial_energy_wh = initial_energy_wh
         self.initial_reagent_l = initial_reagent_l
+        self._drone = drone
         self.done = False
         self.sim_time_s = 0.0
 
@@ -77,11 +112,15 @@ class VehicleCursor:
 
             if time_left_in_seg <= time_remaining + 1e-6:
                 # Finish this segment completely (with small tolerance)
+                t_norm_before = self.t
                 self.t = 1.0
 
-                # Drain all remaining resources for this segment
+                # Energy: non-uniform drain following three-phase power profile
+                e_frac_before = _cumulative_energy_frac(seg, t_norm_before, self._drone)
+                self.energy_wh -= seg.energy_cost_wh * (1.0 - e_frac_before)
+
+                # Reagent: uniform in time (fixed-flow pump)
                 fraction_remaining = max(0.0, 1.0 - (time_in_seg / seg_duration))
-                self.energy_wh -= seg.energy_cost_wh * fraction_remaining
                 self.reagent_l -= seg.reagent_consumed_l * fraction_remaining
 
                 time_remaining -= time_left_in_seg
@@ -99,11 +138,15 @@ class VehicleCursor:
             else:
                 # Partial advance within segment
                 advance_fraction = time_remaining / seg_duration
-                self.t += advance_fraction
-                self.t = min(1.0, self.t)  # Clamp to [0, 1]
+                t_norm_before = self.t
+                self.t = min(1.0, self.t + advance_fraction)
 
-                # Drain proportional resources
-                self.energy_wh -= seg.energy_cost_wh * advance_fraction
+                # Energy: non-uniform drain following three-phase power profile
+                e_frac_before = _cumulative_energy_frac(seg, t_norm_before, self._drone)
+                e_frac_after = _cumulative_energy_frac(seg, self.t, self._drone)
+                self.energy_wh -= seg.energy_cost_wh * (e_frac_after - e_frac_before)
+
+                # Reagent: uniform in time (fixed-flow pump)
                 self.reagent_l -= seg.reagent_consumed_l * advance_fraction
 
                 time_remaining = 0.0
@@ -240,10 +283,12 @@ async def stream_simulation(
 
     Uses a shared SimulationState object that can be updated to change playback_speed.
     """
+    usable_wh = DroneEnergyModel(drone).usable_energy_wh()
     uav_cursor = VehicleCursor(
         uav_route,
-        initial_energy_wh=drone.battery_capacity_wh * (1.0 - drone.battery_reserve_pct / 100.0),
+        initial_energy_wh=usable_wh,
         initial_reagent_l=drone.mass_tank_full_kg,
+        drone=drone,
     )
     ugv_cursor = VehicleCursor(
         ugv_route,
