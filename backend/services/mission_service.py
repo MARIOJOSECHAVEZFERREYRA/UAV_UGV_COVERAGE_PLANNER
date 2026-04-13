@@ -1,4 +1,4 @@
-"""Mission planning service — uses MissionController for full pipeline."""
+"""Mission planning service — uses MissionPlanner for full pipeline."""
 import json
 import traceback
 
@@ -6,8 +6,8 @@ from fastapi import HTTPException
 from shapely.geometry import Polygon, Point
 from sqlalchemy.orm import Session
 
-from ..controllers.mission_controller import StaticMissionController, DynamicMissionController
-from ..db.mission import Mission, MissionStatus, Waypoint, WaypointType
+from .mission_planner import StaticMissionPlanner, DynamicMissionPlanner
+from ..models.mission_model import Mission, MissionStatus, Waypoint, WaypointType
 from ..schemas.mission import MissionCreate
 
 
@@ -135,13 +135,13 @@ def compute_mission(db: Session, mission: Mission) -> Mission:
         overrides = {"swath": mission.spray_width, **stored_overrides}
 
         if ugv_polyline:
-            controller = DynamicMissionController(
+            controller = DynamicMissionPlanner(
                 ugv_polyline=ugv_polyline,
                 ugv_speed=ugv_speed,
                 ugv_t_service=ugv_t_service,
             )
         else:
-            controller = StaticMissionController()
+            controller = StaticMissionPlanner()
 
         result = controller.run_mission_planning(
             db=db,

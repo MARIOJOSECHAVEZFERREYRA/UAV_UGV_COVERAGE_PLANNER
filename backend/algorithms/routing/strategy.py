@@ -2,8 +2,8 @@ from abc import ABC, abstractmethod
 from shapely.geometry import Polygon
 
 from .sweep_angle_optimizer import SweepAngleOptimizer, build_obstacle_union
-from ..polygon.path_planner import BoustrophedonPlanner
-from ..polygon.path_assembler import PathAssembler
+from ..coverage.path_planner import BoustrophedonPlanner
+from ..coverage.path_assembler import PathAssembler
 
 
 class MissionPlannerStrategy(ABC):
@@ -80,7 +80,7 @@ class SimpleGridStrategy(MissionPlannerStrategy):
             if not sweep_segments:
                 continue
 
-            assembler = PathAssembler(polygon, ugv_polyline=ugv_poly, ugv_bias=0.3)
+            assembler = PathAssembler(polygon, base_point=base_point)
             assembly_result = assembler.assemble_connected(sweep_segments)
 
             route_segments = assembly_result.get("route_segments", [])
@@ -90,8 +90,8 @@ class SimpleGridStrategy(MissionPlannerStrategy):
             base_cost = 0.0
             if base_point is not None and route_segments:
                 bp = (float(base_point[0]), float(base_point[1]))
-                _, d_entry = assembler.safe_connection(bp, route_segments[0]["path"][0])
-                _, d_exit = assembler.safe_connection(route_segments[-1]["path"][-1], bp)
+                _, d_entry = assembler.find_connection(bp, route_segments[0]["path"][0])
+                _, d_exit = assembler.find_connection(route_segments[-1]["path"][-1], bp)
                 base_cost = d_entry + d_exit
 
             candidates.append({

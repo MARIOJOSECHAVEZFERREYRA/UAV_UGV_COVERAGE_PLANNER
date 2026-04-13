@@ -6,11 +6,11 @@ import matplotlib.pyplot as plt
 from shapely.geometry import LineString
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(ROOT, 'src'))
+sys.path.insert(0, os.path.join(ROOT, '..', 'backend'))
 
-from algorithms.decomposition import ConcaveDecomposer
-from algorithms.path_planner import BoustrophedonPlanner
-from algorithms.margin import MarginReducer
+from algorithms.coverage.decomposition import ConcaveDecomposer
+from algorithms.coverage.path_planner import BoustrophedonPlanner
+from algorithms.coverage.margin import MarginReducer
 from visual_base import (
     BG, PANEL_BG, CELLS, load_json, setup_dark_ax, make_slider,
     fix_axes_to_bounds, resolve_json_path,
@@ -118,27 +118,35 @@ class PathVisualizer:
                 ix, iy = interior.xy
                 self.ax.fill(ix, iy, fc=BG, alpha=0.9, ec='grey', lw=1)
 
-            wps, dist, cov, turns = planner.generate_path(cell, angle)
+            result = planner.generate_path(cell, angle)
+            segs = result.get('sweep_segments', [])
+            metrics = result.get('metrics', {})
+            dist  = metrics.get('spray_distance_m', 0.0)
+            cov   = metrics.get('coverage_area_m2', 0.0)
+            turns = metrics.get('turn_count', 0)
             total_dist += dist
-            total_cov += cov
+            total_cov  += cov
             total_turns += turns
 
             violations = 0
-            if len(wps) > 1:
-                xs_path, ys_path = zip(*wps)
-                self.ax.plot(xs_path, ys_path, color=c, lw=1.2, alpha=0.9)
-
-                for j in range(len(wps) - 1):
-                    seg = LineString([wps[j], wps[j + 1]])
-                    if not work_poly.buffer(0.5).contains(seg):
+            all_pts = [pt for seg in segs for pt in seg.get('path', [])]
+            if len(all_pts) > 1:
+                for seg in segs:
+                    pts = seg.get('path', [])
+                    if len(pts) >= 2:
+                        xs_path, ys_path = zip(*pts)
+                        self.ax.plot(xs_path, ys_path, color=c, lw=1.2, alpha=0.9)
+                for j in range(len(all_pts) - 1):
+                    line = LineString([all_pts[j], all_pts[j + 1]])
+                    if not work_poly.buffer(0.5).contains(line):
                         violations += 1
-                        self.ax.plot([wps[j][0], wps[j+1][0]],
-                                     [wps[j][1], wps[j+1][1]],
+                        self.ax.plot([all_pts[j][0], all_pts[j+1][0]],
+                                     [all_pts[j][1], all_pts[j+1][1]],
                                      color='red', lw=2.5, alpha=0.9)
 
             total_violations += violations
             n_holes = len(list(cell.interiors))
-            cell_info.append((i, len(wps), dist, turns, violations, n_holes))
+            cell_info.append((i, len(all_pts), dist, turns, violations, n_holes))
 
         fix_axes_to_bounds(self.ax, self.raw_polygon)
 

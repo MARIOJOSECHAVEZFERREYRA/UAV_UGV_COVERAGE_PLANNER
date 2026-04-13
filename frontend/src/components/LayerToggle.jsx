@@ -1,4 +1,5 @@
 import { C, TRAJ } from '../utils/colors.js'
+import FloatingPanel from './FloatingPanel.jsx'
 
 export default function LayerToggle({ highlight, onHighlight }) {
   function renderButton(label, keyName, color) {
@@ -34,25 +35,20 @@ export default function LayerToggle({ highlight, onHighlight }) {
   }
 
   return (
-    <div
+    <FloatingPanel
       style={{
-        position: 'absolute',
         top: 10,
         right: 50,
         zIndex: 20,
         display: 'flex',
         gap: 6,
         alignItems: 'center',
-        background: `${C.bg}cc`,
-        backdropFilter: 'blur(6px)',
-        border: `1px solid ${C.border}`,
-        borderRadius: 8,
         padding: '6px 10px',
       }}
     >
       {renderButton('Spray', 'sweep', TRAJ.sweep)}
       {renderButton('Transit', 'ferry', TRAJ.ferry)}
       {renderButton('Deadhead', 'deadhead', TRAJ.deadhead)}
-    </div>
+    </FloatingPanel>
   )
 }

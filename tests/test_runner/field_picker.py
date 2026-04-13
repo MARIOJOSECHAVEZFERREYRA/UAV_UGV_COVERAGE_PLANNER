@@ -4,7 +4,7 @@ import glob
 
 
 def pick_json(root_dir: str) -> str:
-    data_dir = os.path.join(root_dir, 'data', 'test_fields')
+    data_dir = os.path.join(root_dir, 'test_fields')
     files = sorted(glob.glob(os.path.join(data_dir, '**', '*.json'), recursive=True))
 
     if not files:

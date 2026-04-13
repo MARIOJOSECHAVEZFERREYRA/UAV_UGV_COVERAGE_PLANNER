@@ -1,5 +1,5 @@
 import numpy as np
-from .drone.energy_model import DroneEnergyModel
+from .energy.energy_model import DroneEnergyModel
 
 
 class MissionAnalyzer:

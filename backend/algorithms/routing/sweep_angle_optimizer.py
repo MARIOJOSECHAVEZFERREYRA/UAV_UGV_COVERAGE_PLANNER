@@ -13,9 +13,9 @@ from shapely.geometry import Polygon
 from shapely.ops import unary_union
 from shapely import affinity
 
-from ..polygon.decomposition import ConcaveDecomposer
-from ..polygon.path_planner import BoustrophedonPlanner
-from ..polygon.path_assembler import PathAssembler
+from ..coverage.decomposition import ConcaveDecomposer
+from ..coverage.path_planner import BoustrophedonPlanner
+from ..coverage.path_assembler import PathAssembler
 from ..simulation.mission_simulator import simulate_mission_with_rendezvous
 
 
@@ -60,7 +60,7 @@ class SweepAngleOptimizer:
 
         Walks route_segments tracking energy and reagent using the same physics
         predicates as MissionSegmenter.segment_path(), but without the geometry
-        overhead (safe_connection, PathAssembler, atomic expansion).
+        overhead (find_connection, PathAssembler, atomic expansion).
 
         Cycle boundaries are detected using feasible_after_segment_static().
         When a break is found, the round-trip distance (cycle_end → base → next_start)
@@ -150,14 +150,15 @@ class SweepAngleOptimizer:
 
         return deadhead_total
 
-    def _evaluate_angle(self,angle_deg: int,polygon: Polygon,target_area_S: float,assembler: PathAssembler = None,obstacle_union=None,base_point=None,
+    def _evaluate_angle(self, angle_deg: int, polygon: Polygon, target_area_S: float, obstacle_union=None, base_point=None,
     ) -> dict:
         """
         Run the full CPP pipeline for a candidate heading angle and return
         route-aware metrics.
         """
         sub_polygons = ConcaveDecomposer.decompose(polygon, angle_deg,
-                                                    channel_width=self.planner.spray_width)
+                                                    channel_width=self.planner.spray_width,
+                                                    min_swath=self.planner.spray_width)
 
         rotation_origin = polygon.centroid
         rotated_whole = affinity.rotate(polygon, -angle_deg, origin=rotation_origin)
@@ -168,7 +169,7 @@ class SweepAngleOptimizer:
         total_s_prime = 0.0
         total_turn_count = 0
 
-        for sub_poly in sub_polygons:
+        for cell_id, sub_poly in enumerate(sub_polygons):
             planner_result = self.planner.generate_path(
                 sub_poly,
                 angle_deg,
@@ -181,14 +182,27 @@ class SweepAngleOptimizer:
             metrics = planner_result.get("metrics", {})
 
             if sweep_segments:
+                # Tag with cell_id so SweepSequencer can keep cell sweeps
+                # contiguous, producing topologically coherent cycles.
+                for s in sweep_segments:
+                    s['cell_id'] = cell_id
                 all_sweep_segments.extend(sweep_segments)
 
             total_spray_distance += float(metrics.get("spray_distance_m", 0.0))
             total_s_prime += float(metrics.get("coverage_area_m2", 0.0))
             total_turn_count += int(metrics.get("turn_count", 0))
 
-        if assembler is None:
-            assembler = PathAssembler(polygon)
+        # Fast sequencer: the GA hot path runs hundreds of evaluations; full
+        # geodesic sweep ordering would be wasteful here. The winning angle
+        # is re-assembled in 'full' mode at the end of optimize(). The
+        # base_point anchors the tour so downstream cycles end up locally
+        # coherent instead of jumping across the field.
+        assembler = PathAssembler(
+            sub_polygons,
+            original_polygon=polygon,
+            sequencer_mode='fast',
+            base_point=base_point,
+        )
 
         assembly_result = assembler.assemble_connected(all_sweep_segments)
         route_segments = assembly_result.get("route_segments", [])
@@ -202,8 +216,8 @@ class SweepAngleOptimizer:
         # falls through to the boundary-walk path, which is correct for that case.
         if base_point is not None and route_segments:
             base_pt = (float(base_point[0]), float(base_point[1]))
-            _, d_entry = assembler.safe_connection(base_pt, route_segments[0]["path"][0])
-            _, d_exit = assembler.safe_connection(route_segments[-1]["path"][-1], base_pt)
+            _, d_entry = assembler.find_connection(base_pt, route_segments[0]["path"][0])
+            _, d_exit = assembler.find_connection(route_segments[-1]["path"][-1], base_pt)
             total_l += d_entry + d_exit
 
             # Static mode: estimate intermediate per-cycle deadheads so the GA
@@ -301,7 +315,7 @@ class SweepAngleOptimizer:
             return (angle + delta) % 180
         return angle
 
-    def _evaluate_population(self,population: list[int],polygon: Polygon,target_area_S: float,cache: dict,assembler: PathAssembler = None,obstacle_union=None,base_point=None,
+    def _evaluate_population(self, population: list[int], polygon: Polygon, target_area_S: float, cache: dict, obstacle_union=None, base_point=None,
     ):
         """
         Evaluate all individuals using a cache keyed by integer angle.
@@ -314,7 +328,6 @@ class SweepAngleOptimizer:
                     angle,
                     polygon,
                     target_area_S,
-                    assembler=assembler,
                     obstacle_union=obstacle_union,
                     base_point=base_point,
                 )
@@ -371,18 +384,6 @@ class SweepAngleOptimizer:
         target_area_S = polygon.area
         eval_cache = {}
 
-        # Build a service-point-aware assembler so the NN step biases sweep
-        # ordering toward the service location, reducing deadhead at cycle ends.
-        # Dynamic mode: bias toward UGV polyline.
-        # Static mode:  bias toward base_point (the fixed logistics base).
-        ugv_poly = self.rendezvous_planner.ugv_polyline if self._rv_enabled else None
-        assembler = PathAssembler(
-            polygon,
-            ugv_polyline=ugv_poly,
-            ugv_bias=0.3,
-            base_point=base_point if self._static_deadhead_enabled else None,
-            base_bias=0.3,
-        )
         obstacle_union = build_obstacle_union(polygon)
 
         population = [random.randint(0, 179) for _ in range(self.pop_size)]
@@ -398,7 +399,6 @@ class SweepAngleOptimizer:
                 polygon,
                 target_area_S,
                 eval_cache,
-                assembler=assembler,
                 obstacle_union=obstacle_union,
                 base_point=base_point,
             )
@@ -557,6 +557,13 @@ class SweepAngleOptimizer:
                 )
             raise ValueError("SweepAngleOptimizer failed to find a valid solution.")
 
+        # Re-assemble the winning angle with the full geodesic sequencer so
+        # the emitted route has the best possible ferry ordering. Only done
+        # once — trivial cost compared to the GA run.
+        best_solution = self._reassemble_full(
+            best_solution, polygon, obstacle_union, base_point,
+        )
+
         print(
             f"SweepAngleOptimizer done. Best angle: {best_solution['angle']}°, "
             f"fitness: {best_abs_fitness:.4f} (fixed-norm), "
@@ -565,4 +572,51 @@ class SweepAngleOptimizer:
         )
 
         best_solution["gen_stats"] = gen_stats
+        return best_solution
+
+    def _reassemble_full(self, best_solution, polygon, obstacle_union, base_point):  # noqa: E501
+        """Re-run decomposition + assembly for the best angle in 'full' mode.
+
+        The GA uses a fast euclidean sequencer for speed. This method picks
+        the winning angle and re-emits route_segments with the geodesic
+        sequencer so the ferries chosen for the real mission reflect obstacle
+        avoidance, not just euclidean heuristics.
+        """
+        angle = int(best_solution["angle"])
+        sub_polygons = ConcaveDecomposer.decompose(
+            polygon, angle,
+            channel_width=self.planner.spray_width,
+            min_swath=self.planner.spray_width,
+        )
+
+        rotation_origin = polygon.centroid
+        rotated_whole = affinity.rotate(polygon, -angle, origin=rotation_origin)
+        global_y_origin = rotated_whole.bounds[1]
+
+        all_sweep_segments = []
+        for cell_id, sub_poly in enumerate(sub_polygons):
+            result = self.planner.generate_path(
+                sub_poly,
+                angle,
+                global_y_origin=global_y_origin,
+                rotation_origin=rotation_origin,
+                obstacles=obstacle_union,
+            )
+            sweep_segments = result.get("sweep_segments", [])
+            if sweep_segments:
+                for s in sweep_segments:
+                    s['cell_id'] = cell_id
+                all_sweep_segments.extend(sweep_segments)
+
+        assembler = PathAssembler(
+            sub_polygons, original_polygon=polygon, sequencer_mode='full',
+            base_point=base_point,
+        )
+        assembly = assembler.assemble_connected(all_sweep_segments)
+
+        best_solution = dict(best_solution)
+        best_solution["route_segments"] = assembly.get("route_segments", [])
+        best_solution["combined_path"] = assembly.get("combined_path", [])
+        best_solution["route_distances"] = assembly.get("distances", {})
+
         return best_solution

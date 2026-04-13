@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.database import Base, engine
-from backend.db import drone  # noqa: F401 — registers Drone table with Base
+from backend.models import drone_model  # noqa: F401 — registers Drone table with Base
 from backend.routers import fields, mission, simulation, drones
 
 # Create tables on startup

@@ -38,5 +38,5 @@ export const CYCLE_PALETTE = [
 export const DRAW = {
   field:    '#38BDF8',
   obstacle: '#ef4444',
-  ugv:      '#fb923c',   // UGV route — orange, distinct from sweep/ferry/deadhead
+  ugv:      '#fb923c',
 }

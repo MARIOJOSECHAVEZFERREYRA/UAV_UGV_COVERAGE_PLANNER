@@ -2,11 +2,13 @@ import { useRef, useCallback, useState, useEffect } from 'react'
 import { MODE } from '../utils/modes.js'
 import { waypointsByType } from '../utils/geo.js'
 import {
+  getCycleColor,
   getDrawColor,
+  getMissionMarkers,
   getPreviewLinePoints,
   getTrajectoryOpacity,
 } from '../utils/viewScene.js'
-import { TRAJ, DRAW, CYCLE_PALETTE } from '../utils/colors.js'
+import { TRAJ, DRAW } from '../utils/colors.js'
 import ZoomControls from './ZoomControls.jsx'
 import EdgeLabelsSvg from './EdgeLabelsSvg.jsx'
 import BaseMarkerSvg from './BaseMarkerSvg.jsx'
@@ -27,6 +29,59 @@ function MissionMarkerSvg({ sx, sy, r, label, color, strokeWidth }) {
       >
         {label}
       </text>
+    </g>
+  )
+}
+
+function SelectableTrajectoryPolyline({
+  run,
+  toSvg,
+  px,
+  opacity,
+  baseWidth,
+  activeWidth,
+  dashArray,
+  activeCycle,
+  drawMode,
+  onCycleEnter,
+  onCycleLeave,
+  onCycleToggle,
+}) {
+  const cycleIndex = run.cycleIndex ?? 0
+  const color = getCycleColor(cycleIndex)
+  const isActive = activeCycle === null || activeCycle === cycleIndex
+  const points = run.points.map(({ x, y }) => toSvg(x, y).join(',')).join(' ')
+
+  return (
+    <g>
+      <polyline
+        points={points}
+        fill="none"
+        stroke={color}
+        strokeWidth={(isActive ? activeWidth : baseWidth) * px}
+        strokeOpacity={opacity}
+        strokeDasharray={dashArray ? `${dashArray[0] * px} ${dashArray[1] * px}` : undefined}
+        style={{ pointerEvents: 'none', transition: 'stroke-opacity 0.15s' }}
+      />
+      {drawMode === MODE.NONE && (
+        <polyline
+          points={points}
+          fill="none"
+          stroke="transparent"
+          strokeWidth={14 * px}
+          strokeLinecap="round"
+          pointerEvents="all"
+          style={{ cursor: 'pointer' }}
+          onMouseEnter={() => onCycleEnter(cycleIndex)}
+          onMouseLeave={onCycleLeave}
+          onClick={event => {
+            event.stopPropagation()
+            onCycleToggle(cycleIndex)
+          }}
+        >
+          <title>Cycle {cycleIndex + 1}</title>
+        </polyline>
+      )}
     </g>
   )
 }
@@ -545,41 +600,23 @@ export default function PolygonCanvas({
           ) : null
         )}
 
-        {deadheadRuns.map((run, index) => {
-          const ci = run.cycleIndex ?? 0
-          const color = CYCLE_PALETTE[ci % CYCLE_PALETTE.length]
-          const isActive = activeCycle === null || activeCycle === ci
-          const pts = run.points.map(({ x, y }) => mToSVG(x, y).join(',')).join(' ')
-          return (
-            <g key={`deadhead-${index}`}>
-              <polyline
-                points={pts}
-                fill="none"
-                stroke={color}
-                strokeWidth={(isActive ? 2 : 1.6) * px}
-                strokeOpacity={cycleOp(run, deadheadOpacity)}
-                strokeDasharray={`${3 * px} ${2 * px}`}
-                style={{ pointerEvents: 'none', transition: 'stroke-opacity 0.15s' }}
-              />
-              {drawMode === MODE.NONE && (
-                <polyline
-                  points={pts}
-                  fill="none"
-                  stroke="transparent"
-                  strokeWidth={14 * px}
-                  strokeLinecap="round"
-                  pointerEvents="all"
-                  style={{ cursor: 'pointer' }}
-                  onMouseEnter={() => handleCycleEnter(ci)}
-                  onMouseLeave={handleCycleLeave}
-                  onClick={(e) => { e.stopPropagation(); setSelectedCycle(p => p === ci ? null : ci) }}
-                >
-                  <title>Cycle {ci + 1}</title>
-                </polyline>
-              )}
-            </g>
-          )
-        })}
+        {deadheadRuns.map((run, index) => (
+          <SelectableTrajectoryPolyline
+            key={`deadhead-${index}`}
+            run={run}
+            toSvg={mToSVG}
+            px={px}
+            opacity={cycleOp(run, deadheadOpacity)}
+            baseWidth={1.6}
+            activeWidth={2}
+            dashArray={[3, 2]}
+            activeCycle={activeCycle}
+            drawMode={drawMode}
+            onCycleEnter={handleCycleEnter}
+            onCycleLeave={handleCycleLeave}
+            onCycleToggle={cycleIndex => setSelectedCycle(current => current === cycleIndex ? null : cycleIndex)}
+          />
+        ))}
 
         {ferryRuns.map((run, index) => (
           <polyline
@@ -594,86 +631,38 @@ export default function PolygonCanvas({
           />
         ))}
 
-        {sweepRuns.map((run, index) => {
-          const ci = run.cycleIndex ?? 0
-          const color = CYCLE_PALETTE[ci % CYCLE_PALETTE.length]
-          const isActive = activeCycle === null || activeCycle === ci
-          const pts = run.points.map(({ x, y }) => mToSVG(x, y).join(',')).join(' ')
+        {sweepRuns.map((run, index) => (
+          <SelectableTrajectoryPolyline
+            key={`sweep-${index}`}
+            run={run}
+            toSvg={mToSVG}
+            px={px}
+            opacity={cycleOp(run, sweepOpacity)}
+            baseWidth={2}
+            activeWidth={2.5}
+            activeCycle={activeCycle}
+            drawMode={drawMode}
+            onCycleEnter={handleCycleEnter}
+            onCycleLeave={handleCycleLeave}
+            onCycleToggle={cycleIndex => setSelectedCycle(current => current === cycleIndex ? null : cycleIndex)}
+          />
+        ))}
+
+        {getMissionMarkers(waypoints, basePoints).map(marker => {
+          const [sx, sy] = mToSVG(marker.point.x, marker.point.y)
+
           return (
-            <g key={`sweep-${index}`}>
-              <polyline
-                points={pts}
-                fill="none"
-                stroke={color}
-                strokeWidth={(isActive ? 2.5 : 2) * px}
-                strokeOpacity={cycleOp(run, sweepOpacity)}
-                style={{ pointerEvents: 'none', transition: 'stroke-opacity 0.15s' }}
-              />
-              {drawMode === MODE.NONE && (
-                <polyline
-                  points={pts}
-                  fill="none"
-                  stroke="transparent"
-                  strokeWidth={14 * px}
-                  strokeLinecap="round"
-                  pointerEvents="all"
-                  style={{ cursor: 'pointer' }}
-                  onMouseEnter={() => handleCycleEnter(ci)}
-                  onMouseLeave={handleCycleLeave}
-                  onClick={(e) => { e.stopPropagation(); setSelectedCycle(p => p === ci ? null : ci) }}
-                >
-                  <title>Cycle {ci + 1}</title>
-                </polyline>
-              )}
-            </g>
+            <MissionMarkerSvg
+              key={marker.key}
+              sx={sx}
+              sy={sy}
+              r={6 * px}
+              strokeWidth={1.5 * px}
+              label={marker.label}
+              color={marker.color}
+            />
           )
         })}
-
-        {(() => {
-          // Deduplicate base points to assign S / R1..Rn / E / Base labels
-          const seen = new Set()
-          const uniqueBases = basePoints.filter(pt => {
-            const key = `${pt.x.toFixed(1)},${pt.y.toFixed(1)}`
-            if (seen.has(key)) return false
-            seen.add(key)
-            return true
-          })
-          const isMobile = uniqueBases.length > 1
-
-          // "S" — first non-base waypoint
-          const firstWp = waypoints?.find(wp => wp.waypoint_type !== 'base')
-
-          return (
-            <>
-              {firstWp && (() => {
-                const [sx, sy] = mToSVG(firstWp.x, firstWp.y)
-                return (
-                  <MissionMarkerSvg
-                    key="marker-s"
-                    sx={sx} sy={sy} r={6 * px}
-                    strokeWidth={1.5 * px}
-                    label="S" color="#27ae60"
-                  />
-                )
-              })()}
-
-              {uniqueBases.map((pt, i) => {
-                const [sx, sy] = mToSVG(pt.x, pt.y)
-                const isLast = i === uniqueBases.length - 1
-                const label = !isMobile ? 'Base' : isLast ? 'E' : `R${i + 1}`
-                const color = isLast ? '#8b5cf6' : '#e67e22'
-                return (
-                  <MissionMarkerSvg
-                    key={`marker-base-${i}`}
-                    sx={sx} sy={sy} r={6 * px}
-                    strokeWidth={1.5 * px}
-                    label={label} color={color}
-                  />
-                )
-              })}
-            </>
-          )
-        })()}
 
         {basePoint && (() => {
           const [sx, sy] = mToSVG(basePoint[0], basePoint[1])

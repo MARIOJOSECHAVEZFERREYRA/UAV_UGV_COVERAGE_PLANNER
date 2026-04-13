@@ -15,9 +15,9 @@ import math
 import time
 from collections.abc import AsyncGenerator
 
-from backend.algorithms.drone.energy_model import DroneEnergyModel
+from backend.algorithms.energy.energy_model import DroneEnergyModel
 from backend.schemas.simulation import SegmentType, SimulationFrame, VehicleSimState
-from backend.services.route_builder import VehicleRoute, RouteSegment
+from backend.services.route_builder_service import VehicleRoute, RouteSegment
 
 
 def _cumulative_energy_frac(seg: RouteSegment, t_norm: float, drone) -> float:

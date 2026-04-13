@@ -5,9 +5,9 @@ import argparse
 import matplotlib.pyplot as plt
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(ROOT, 'src'))
+sys.path.insert(0, os.path.join(ROOT, '..', 'backend'))
 
-from algorithms.margin import MarginReducer
+from algorithms.coverage.margin import MarginReducer
 from visual_base import (
     BG, PANEL_BG, load_json, setup_dark_ax, make_slider,
     fix_axes_to_bounds, resolve_json_path,

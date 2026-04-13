@@ -1,7 +1,6 @@
 """Serve test field polygons from data/test_fields/."""
 import json
 from pathlib import Path
-
 from fastapi import APIRouter, HTTPException
 
 router = APIRouter(prefix="/fields", tags=["fields"])
@@ -16,11 +15,9 @@ def _all_fields() -> list[dict]:
         fields.append({"name": f.stem, "category": category, "path": str(f)})
     return fields
 
-
 @router.get("/")
 def list_fields():
     return [{"name": f["name"], "category": f["category"]} for f in _all_fields()]
-
 
 @router.get("/{name}")
 def get_field(name: str):

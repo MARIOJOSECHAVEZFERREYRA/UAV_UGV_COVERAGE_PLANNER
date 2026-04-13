@@ -1,14 +1,14 @@
 # Parte 1 — Division de poligono
-from .polygon.path_planner import BoustrophedonPlanner
-from .polygon.margin import MarginReducer
-from .polygon.decomposition import ConcaveDecomposer
+from .coverage.path_planner import BoustrophedonPlanner
+from .coverage.margin import MarginReducer
+from .coverage.decomposition import ConcaveDecomposer
 
 # Parte 2 — Modelo fisico no lineal del dron
-from .drone.energy_model import DroneEnergyModel
+from .energy.energy_model import DroneEnergyModel
 
 # Parte 3 — Segmentacion de misiones con base estatica
-from .rendezvous.segmentation import MissionSegmenter
+from .energy.segmentation import MissionSegmenter
 
 # Parte 4 — Metodo de optimizacion
-from .optimization.sweep_angle_optimizer import SweepAngleOptimizer
-from .optimization.strategy import StrategyFactory
+from .routing.sweep_angle_optimizer import SweepAngleOptimizer
+from .routing.strategy import StrategyFactory

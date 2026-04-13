@@ -20,7 +20,7 @@ from typing import Optional
 
 from shapely.geometry import Point, Polygon
 
-from backend.algorithms.drone.energy_model import DroneEnergyModel
+from backend.algorithms.energy.energy_model import DroneEnergyModel
 from backend.schemas.simulation import SegmentType
 
 

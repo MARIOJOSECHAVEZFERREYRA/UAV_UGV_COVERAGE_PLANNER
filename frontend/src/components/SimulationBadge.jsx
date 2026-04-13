@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { C } from '../utils/colors.js'
+import FloatingPanel from './FloatingPanel.jsx'
 
 function formatSimTime(seconds) {
   const mins = Math.floor(seconds / 60)
@@ -45,18 +46,12 @@ function Sep() {
 }
 
 const badgeBase = {
-  position: 'absolute',
   bottom: 16,
   left: 16,
   zIndex: 10,
   display: 'flex',
   alignItems: 'center',
-  background: `${C.bg}e6`,
-  backdropFilter: 'blur(6px)',
-  border: `1px solid ${C.border}`,
-  borderRadius: 8,
   fontSize: 12,
-  color: C.text,
 }
 
 export default function SimulationBadge({
@@ -77,19 +72,19 @@ export default function SimulationBadge({
 
   if (minimized) {
     return (
-      <div style={{ ...badgeBase, gap: 6, padding: '5px 8px' }}>
+      <FloatingPanel style={{ ...badgeBase, gap: 6, padding: '5px 8px' }}>
         {dot}
         <span style={{ color: C.muted, fontVariantNumeric: 'tabular-nums' }}>
           {formatSimTime(simTimeS)}
         </span>
         <CtrlBtn title="Expand" onClick={() => { setMinimized(false); onResume() }}>⤢</CtrlBtn>
         <CtrlBtn title="Close simulation" variant="danger" onClick={onDismiss}>✕</CtrlBtn>
-      </div>
+      </FloatingPanel>
     )
   }
 
   return (
-    <div style={{ ...badgeBase, gap: 8, padding: '6px 10px' }}>
+    <FloatingPanel style={{ ...badgeBase, gap: 8, padding: '6px 10px' }}>
       {/* Status + time */}
       <span style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
         {dot}
@@ -139,6 +134,6 @@ export default function SimulationBadge({
           )
         })}
       </div>
-    </div>
+    </FloatingPanel>
   )
 }

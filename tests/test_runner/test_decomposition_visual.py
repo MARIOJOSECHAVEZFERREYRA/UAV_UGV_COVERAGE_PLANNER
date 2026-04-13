@@ -10,10 +10,10 @@ from shapely.geometry import Polygon, LineString, Point
 from shapely.geometry.polygon import orient
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(ROOT, 'src'))
+sys.path.insert(0, os.path.join(ROOT, '..', 'backend'))
 
-from algorithms.decomposition import ConcaveDecomposer
-from algorithms.path_planner import BoustrophedonPlanner
+from algorithms.coverage.decomposition import ConcaveDecomposer
+from algorithms.coverage.path_planner import BoustrophedonPlanner
 from visual_base import (
     BG, PANEL_BG, CELLS, load_json, draw_poly, setup_dark_ax,
     fix_axes_to_bounds, resolve_json_path,
@@ -223,10 +223,12 @@ def draw_cut_line(ax, vertex, heading_rad, polygon):
 def draw_path(ax, poly, heading_rad, color=C_PATH):
     try:
         planner = BoustrophedonPlanner(spray_width=SWATH)
-        path, _, _, _ = planner.generate_path(poly, np.degrees(heading_rad))
-        if len(path) > 1:
-            xs, ys = zip(*path)
-            ax.plot(xs, ys, color=color, lw=1.2, alpha=0.9)
+        result = planner.generate_path(poly, np.degrees(heading_rad))
+        for seg in result.get("sweep_segments", []):
+            path = seg.get("path", [])
+            if len(path) > 1:
+                xs, ys = zip(*path)
+                ax.plot(xs, ys, color=color, lw=1.2, alpha=0.9)
     except Exception:
         pass
 

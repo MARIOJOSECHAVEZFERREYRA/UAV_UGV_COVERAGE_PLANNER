@@ -1,15 +1,5 @@
 import { useEffect, useState } from 'react'
-
-const C = {
-  bg:      '#0d1117',
-  surface: '#161b22',
-  border:  '#21262d',
-  accent:  '#58a6ff',
-  text:    '#e6edf3',
-  muted:   '#8b949e',
-  success: '#3fb950',
-  warning: '#d29922',
-}
+import { C } from '../utils/colors.js'
 
 const s = {
   root: {
@@ -113,8 +103,6 @@ export default function DroneSpecsView({ droneName, onBack }) {
   if (error) return <div style={s.error}>{error}</div>
   if (!specs) return <div style={s.loading}>Loading specifications…</div>
 
-  const totalMass = specs.mass_empty_kg + specs.mass_battery_kg + specs.mass_tank_full_kg
-
   return (
     <div style={s.root}>
       <button style={s.backBtn} onClick={onBack}>
@@ -134,7 +122,7 @@ export default function DroneSpecsView({ droneName, onBack }) {
           <SpecRow label="Battery pack" value={specs.mass_battery_kg} unit="kg" />
           <SpecRow label="Full tank (reagent)" value={specs.mass_tank_full_kg} unit="kg" />
           <div style={{ height: 1, background: C.border, margin: '8px 0' }} />
-          <SpecRow label="Max takeoff mass" value={totalMass.toFixed(1)} unit="kg" />
+          <SpecRow label="Max takeoff mass" value={specs.mass_takeoff_max_kg.toFixed(1)} unit="kg" />
         </Card>
 
         <Card title="Battery & Energy">

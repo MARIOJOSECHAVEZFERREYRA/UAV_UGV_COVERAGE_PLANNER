@@ -335,3 +335,195 @@ class RendezvousPlanner:
             return {'feasible': False}
 
         return best
+
+    # ------------------------------------------------------------------
+    # PLANIFICACION DE CICLOS CON UGV MOVIL
+    # ------------------------------------------------------------------
+
+    def plan_dynamic_cycles(self, segmenter, polygon, route_segments):
+        """
+        Builds mission cycles with dynamic rendezvous for mobile UGV.
+
+        Handles UGV time tracking and selects the best rendezvous point for
+        each service stop. Inserts deadhead segments to/from rendezvous points.
+
+        Called after coverage path planning. The segmenter provides energy/liquid
+        feasibility predicates; this method owns the service stop decision.
+
+        Parameters
+        ----------
+        segmenter : MissionSegmenter
+            Pre-configured segmenter with drone params and energy model.
+        polygon : Polygon
+            Field polygon for obstacle-aware deadhead routing.
+        route_segments : list[dict]
+            Typed sweep/ferry segments from coverage path planner.
+
+        Returns
+        -------
+        list[dict]
+            Full cycles with deadheads, same format as static pipeline.
+        """
+        from ..coverage.path_assembler import PathAssembler
+
+        if not route_segments:
+            return []
+
+        def _transit_fn(energy_model, q_reagent):
+            def fn(distance_m):
+                return energy_model.energy_transit(distance_m, q_reagent)
+            return fn
+
+        assembler = PathAssembler(polygon)
+        energy_model = segmenter.energy_model
+        usable_energy = energy_model.usable_energy_wh()
+        reserve_wh = energy_model.reserve_wh_mobile()
+        v_uav = float(segmenter.drone.speed_max_ms)
+
+        ugv_distance_along = 0.0
+        ugv_last_update_time = 0.0
+        energy_remaining = usable_energy
+        liquid_remaining = segmenter.tank_capacity
+        t = 0.0
+
+        cycles = []
+        current_cycle_segments = []
+
+        first_path = route_segments[0].get('path', [])
+        uav_pos = segmenter._xy(first_path[0][:2]) if first_path else (0.0, 0.0)
+
+        i = 0
+        while i < len(route_segments):
+            seg = route_segments[i]
+            seg_type = seg.get('segment_type', 'ferry')
+            path = seg.get('path', [])
+            spraying = bool(seg.get('spraying', seg_type == 'sweep'))
+
+            if len(path) < 2:
+                i += 1
+                continue
+
+            normalized_path = [segmenter._xy(pt[:2]) for pt in path]
+            p2 = normalized_path[-1]
+            dist = float(seg.get('distance_m', segmenter._path_length(normalized_path)))
+
+            if dist < 1e-9:
+                i += 1
+                continue
+
+            # Advance UGV to current time
+            ugv_state = self.advance_ugv_to_time(ugv_distance_along, ugv_last_update_time, t)
+            ugv_distance_along = ugv_state['distance_along']
+            ugv_last_update_time = ugv_state['last_update_time']
+
+            liq_step = segmenter._segment_liquid_use(seg_type, dist)
+            energy_step = segmenter._segment_energy(seg_type, dist, liquid_remaining)
+            liquid_after = max(0.0, liquid_remaining - liq_step)
+            t_step = segmenter._segment_time(seg_type, dist)
+            t_after = t + t_step
+
+            rv_after = self.find_best_rendezvous(
+                uav_pos=p2,
+                uav_energy_rem=energy_remaining - energy_step,
+                ugv_distance_along=ugv_distance_along,
+                t_current=t_after,
+                v_uav=v_uav,
+                transit_energy_fn=_transit_fn(energy_model, liquid_after),
+                e_reserve=reserve_wh,
+            )
+
+            dist_to_rv = rv_after['d_uav'] if rv_after['feasible'] else float('inf')
+            can_do = energy_model.feasible_after_segment_dynamic(
+                energy_remaining, liquid_remaining, energy_step, liq_step, dist_to_rv
+            )
+
+            if can_do or not current_cycle_segments:
+                atomic = segmenter._path_to_segments(normalized_path, seg_type, spraying)
+                current_cycle_segments.extend(atomic)
+                energy_remaining -= energy_step
+                liquid_remaining = liquid_after
+                t += t_step
+                uav_pos = p2
+                i += 1
+                continue
+
+            # --- Service needed before this segment ---
+            resume_pos = uav_pos
+
+            ugv_state = self.advance_ugv_to_time(ugv_distance_along, ugv_last_update_time, t)
+            ugv_distance_along = ugv_state['distance_along']
+            ugv_last_update_time = ugv_state['last_update_time']
+
+            rv = self.find_best_rendezvous(
+                uav_pos=uav_pos,
+                uav_energy_rem=energy_remaining,
+                ugv_distance_along=ugv_distance_along,
+                t_current=t,
+                v_uav=v_uav,
+                transit_energy_fn=_transit_fn(energy_model, liquid_remaining),
+                e_reserve=reserve_wh,
+            )
+
+            if not rv['feasible']:
+                # TODO: raise MissionInfeasibleError — currently falls back to
+                # continuing the segment to avoid aborting the mission silently.
+                atomic = segmenter._path_to_segments(normalized_path, seg_type, spraying)
+                current_cycle_segments.extend(atomic)
+                energy_remaining -= energy_step
+                liquid_remaining = liquid_after
+                t += t_step
+                uav_pos = p2
+                i += 1
+                continue
+
+            rv_point = rv['point']
+
+            dh_to_rv_path, _ = assembler.find_connection(uav_pos, rv_point)
+            dh_to_rv = segmenter._path_to_segments(dh_to_rv_path, 'deadhead', False)
+
+            cycle_all_segs = current_cycle_segments + dh_to_rv
+            cycle_path = segmenter.segments_to_path(cycle_all_segs)
+            cycles.append({
+                "type": "work",
+                "path": cycle_path,
+                "segments": cycle_all_segs,
+                "visual_groups": segmenter.compress_segments(cycle_all_segs),
+                "swath_width": segmenter.swath_width,
+                "base_point": rv_point,
+                "rv_wait_s": max(0.0, rv['t_wait_uav']),
+            })
+
+            t += rv['flight_time_uav']
+            meet_time = max(rv['t_uav_arrival'], rv['t_ugv_arrival'])
+            t = meet_time + self.t_service
+
+            ugv_distance_along = rv['distance_along']
+            ugv_last_update_time = t
+
+            energy_remaining = usable_energy
+            liquid_remaining = segmenter.tank_capacity
+            uav_pos = rv_point
+
+            dh_from_rv_path, d_back = assembler.find_connection(rv_point, resume_pos)
+            e_back = energy_model.energy_transit(d_back, liquid_remaining)
+            t_back = energy_model.time_transit(d_back)
+            energy_remaining -= e_back
+            t += t_back
+            uav_pos = resume_pos
+
+            dh_from_rv = segmenter._path_to_segments(dh_from_rv_path, 'deadhead', False)
+            current_cycle_segments = dh_from_rv
+            # Do NOT increment i: retry same segment with fresh resources
+
+        if current_cycle_segments:
+            cycle_path = segmenter.segments_to_path(current_cycle_segments)
+            cycles.append({
+                "type": "work",
+                "path": cycle_path,
+                "segments": current_cycle_segments,
+                "visual_groups": segmenter.compress_segments(current_cycle_segments),
+                "swath_width": segmenter.swath_width,
+                "base_point": uav_pos,
+            })
+
+        return cycles

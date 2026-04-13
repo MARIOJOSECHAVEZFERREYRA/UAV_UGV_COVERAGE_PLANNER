@@ -1,26 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import { TRAJ, DRAW, CYCLE_PALETTE } from '../utils/colors.js'
-import {
-  fieldToGeoJSON,
-  obstacleToGeoJSON,
-  safeZoneToGeoJSON,
-  waypointsByType,
-  xyToLngLat,
-  fieldBounds,
-} from '../utils/geo.js'
+import { TRAJ, DRAW } from '../utils/colors.js'
+import { fieldToGeoJSON, obstacleToGeoJSON, safeZoneToGeoJSON, waypointsByType, xyToLngLat, fieldBounds,} from '../utils/geo.js'
 import { MODE } from '../utils/modes.js'
-import {
-  EMPTY_FC,
-  formatDistanceMeters,
-  getEdgeLabelGroups,
-  getEdgeSegments,
-  getPreviewLinePoints,
-  getTrajectoryOpacity,
-  toLineFeatureCollection,
-  toPointFeatureCollection,
-} from '../utils/viewScene.js'
+import { EMPTY_FC, getCycleColor, formatDistanceMeters, getEdgeLabelGroups,getEdgeSegments, getMissionMarkers, getPreviewLinePoints, getTrajectoryOpacity, toLineFeatureCollection, toPointFeatureCollection} from '../utils/viewScene.js'
 import ZoomControls from './ZoomControls.jsx'
 import VehicleOverlay from './VehicleOverlay.jsx'
 
@@ -364,10 +348,8 @@ export default function MapView({
     const map = mapRef.current
     const { sweepRuns, ferryRuns, deadheadRuns, basePoints } = waypointsByType(waypoints)
 
-    const cycleColor = run => CYCLE_PALETTE[(run.cycleIndex ?? 0) % CYCLE_PALETTE.length]
-
     map.getSource('sweep-trajectory').setData(
-      toLineFeatureCollection(sweepRuns, objectPointToLngLat, cycleColor)
+      toLineFeatureCollection(sweepRuns, objectPointToLngLat, run => getCycleColor(run.cycleIndex))
     )
 
     map.getSource('ferry-trajectory').setData(
@@ -375,50 +357,23 @@ export default function MapView({
     )
 
     map.getSource('deadhead-trajectory').setData(
-      toLineFeatureCollection(deadheadRuns, objectPointToLngLat, cycleColor)
+      toLineFeatureCollection(deadheadRuns, objectPointToLngLat, run => getCycleColor(run.cycleIndex))
     )
 
     map.getSource('base-markers').setData(
       toPointFeatureCollection(basePoints, objectPointToLngLat)
     )
 
-    // Mission markers: S (start), R1…Rn (rendezvous), E (end), Base (static)
     rvMarkersRef.current.forEach(m => m.remove())
     rvMarkersRef.current = []
 
-    // "S" — first non-base waypoint = UAV start position
-    const firstWp = waypoints?.find(wp => wp.waypoint_type !== 'base')
-    if (firstWp) {
-      const el = makeRvMarkerEl('S', '#27ae60')
-      const [lng, lat] = xyToLngLat(firstWp.x, firstWp.y)
+    for (const marker of getMissionMarkers(waypoints, basePoints)) {
+      const el = makeRvMarkerEl(marker.label, marker.color)
+      const [lng, lat] = xyToLngLat(marker.point.x, marker.point.y)
       rvMarkersRef.current.push(
         new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat([lng, lat]).addTo(map)
       )
     }
-
-    // Deduplicate base points to find unique rendezvous / end positions.
-    // Mobile missions have distinct locations; static collapse to one point.
-    const seen = new Set()
-    const uniqueBases = basePoints.filter(pt => {
-      const key = `${pt.x.toFixed(1)},${pt.y.toFixed(1)}`
-      if (seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
-
-    const isMobile = uniqueBases.length > 1
-    uniqueBases.forEach((pt, i) => {
-      const isLast = i === uniqueBases.length - 1
-      // Mobile: intermediate stops are R1, R2…; last position is E
-      // Static: single fixed base labelled "Base"
-      const label = !isMobile ? 'Base' : isLast ? 'E' : `R${i + 1}`
-      const color = isLast ? '#8b5cf6' : '#e67e22'
-      const el = makeRvMarkerEl(label, color)
-      const [lng, lat] = xyToLngLat(pt.x, pt.y)
-      rvMarkersRef.current.push(
-        new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat([lng, lat]).addTo(map)
-      )
-    })
   }, [ready, waypoints])
 
   // Cycle hover / click interaction on trajectory layers

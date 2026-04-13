@@ -1,7 +1,7 @@
 from datetime import datetime
 from pydantic import BaseModel, Field
 
-from backend.db.mission import MissionStatus, WaypointType
+from backend.models.mission_model import MissionStatus, WaypointType
 
 
 

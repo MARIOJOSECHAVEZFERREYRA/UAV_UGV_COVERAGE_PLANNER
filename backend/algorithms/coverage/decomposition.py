@@ -11,11 +11,6 @@ class ConcaveDecomposer:
     """
     Implementation of Phase 2: Concavity Detection and Decomposition.
     Based on Sections 2.3 and 2.4 of the paper by Li et al. (2023).
-
-    Optimized with:
-    - PreparedGeometry for batch sweep-line intersections
-    - Precomputed concave vertex detection
-    - Batch Type 2 classification
     """
 
     # ------------------------------------------------------------------ #
@@ -40,8 +35,7 @@ class ConcaveDecomposer:
     @staticmethod
     def _extract_hit_points(intersection) -> list[Point]:
         """
-        Extract Point candidates from any Shapely intersection result.
-        Skips LineString/MultiLineString (collinear overlaps).
+        Procesa cualquier resultado de intersección geométrica para extraer exclusivamente los puntos de contacto, ignorando superposiciones de líneas o resultados vacíos.
         """
         if intersection.is_empty:
             return []
@@ -59,8 +53,7 @@ class ConcaveDecomposer:
                                dx: float, dy: float,
                                ray_len: float = 1e6) -> Point | None:
         """
-        Cast a ray from (vx, vy) in direction (dx, dy) and return
-        the nearest boundary hit point, or None.
+        Proyecta un rayo desde un vértice y devuelve el punto de impacto MAS cercano contra cualquier borde del polígono (exterior o interior) para determinar el límite de un corte.
         """
         origin = Point(vx, vy)
         far_pt = (vx + ray_len * dx, vy + ray_len * dy)
@@ -87,8 +80,7 @@ class ConcaveDecomposer:
                            dx: float, dy: float,
                            ray_len: float = 1e6) -> Point | None:
         """
-        Cast a ray from (vx, vy) in direction (dx, dy) against a single
-        ring (exterior or interior) and return the nearest hit point.
+        Proyecta rayo de vertice hacia un punto espeficico
         """
         origin = Point(vx, vy)
         ray_line = LineString([(vx, vy), (vx + ray_len * dx, vy + ray_len * dy)])
@@ -102,19 +94,34 @@ class ConcaveDecomposer:
         return hit_pt
 
     @staticmethod
+    def _min_bounding_width(polygon: Polygon) -> float:
+        """Minimum width of the polygon's minimum rotated bounding rectangle."""
+        mrr = polygon.minimum_rotated_rectangle
+        coords = list(mrr.exterior.coords)
+        d1 = math.hypot(coords[1][0] - coords[0][0], coords[1][1] - coords[0][1])
+        d2 = math.hypot(coords[2][0] - coords[1][0], coords[2][1] - coords[1][1])
+        return min(d1, d2)
+
+    @staticmethod
     def _validate_and_recurse(polygon: Polygon, sub_polygons: list[Polygon],
                                heading_angle_deg: float,
                                depth: int,
-                               channel_width: float = 1.0) -> tuple[list[Polygon], bool]:
+                               channel_width: float = 1.0,
+                               min_swath: float = 0.0) -> tuple[list[Polygon], bool]:
         """
-        Filter valid sub-polygons, check for degenerate cuts,
-        and recurse. Returns (result_list, success_bool).
+        Filtro de seguridad que valida que cada división del polígono sea geométricamente lógica y útil.
         """
-        valid_subs = [s for s in sub_polygons if s.area > 0.1]
+        valid_subs = [
+            s for s in sub_polygons
+            if s.area > 0.1 and (
+                min_swath <= 0.0 or
+                ConcaveDecomposer._min_bounding_width(s) >= min_swath
+            )
+        ]
         if not valid_subs:
             return [], False
 
-        # Check degeneracy
+        # Chequeo de deteccion de cortes inutiles (degeneracion)
         if len(valid_subs) == 1:
             v = valid_subs[0]
             if (len(list(v.interiors)) >= len(list(polygon.interiors))
@@ -128,7 +135,7 @@ class ConcaveDecomposer:
         for sub in valid_subs:
             sub = orient(sub, sign=1.0)
             result.extend(
-                ConcaveDecomposer.decompose(sub, heading_angle_deg, depth + 1, channel_width)
+                ConcaveDecomposer.decompose(sub, heading_angle_deg, depth + 1, channel_width, min_swath)
             )
         return result, True
 
@@ -139,7 +146,8 @@ class ConcaveDecomposer:
     @staticmethod
     def _find_concave_indices(coords: list) -> list[int]:
         """
-        Return indices of all concave vertices in one pass.
+        Retorna los INDICES de todos los vertices concavos en una pasada
+
         In CCW winding, a negative cross product indicates a right turn (concavity).
         """
         n = len(coords)
@@ -160,36 +168,39 @@ class ConcaveDecomposer:
                                pt: np.ndarray, heading: np.ndarray,
                                ray: float = 1e5) -> int:
         """
-        Count how many segments the sweep-line produces at a given point.
-        Uses PreparedGeometry for fast intersection pre-check.
+        proyecta una línea de barrido virtual a través del polígono y cuenta n segmentos continuos en los que se divide al intersecar con su interior.
         """
         sweep = LineString([
             (pt[0] - ray * heading[0], pt[1] - ray * heading[1]),
             (pt[0] + ray * heading[0], pt[1] + ray * heading[1]),
         ])
-        # Fast rejection with prepared geometry's spatial index
+
         if not prepared_polygon.intersects(sweep):
             return 0
 
         inter = sweep.intersection(polygon)
-        if inter.is_empty:
+
+        if inter.is_empty: 
             return 0
         if inter.geom_type == 'LineString':
             return 1
-        if inter.geom_type == 'MultiLineString':
+        if inter.geom_type == 'MultiLineString': 
             return len(list(inter.geoms))
-        return sum(1 for g in inter.geoms if g.geom_type == 'LineString')
+        
+        if hasattr(inter, 'geoms'):
+            return sum(1 for g in inter.geoms if g.geom_type == 'LineString')
+        
+        return 0
+        
 
     @staticmethod
     def _classify_type2_batch(polygon: Polygon, coords: list,
                                concave_indices: list[int],
                                heading_rad: float) -> list[int]:
         """
-        Classify all concave exterior vertices as Type 2 in batch,
-        using a single PreparedGeometry for all sweep-line tests.
+        Clasifica todos los vértices exteriores cóncavos como tipo 2 por lote.
 
-        A vertex is Type 2 if the number of sweep-line segments changes
-        when crossing through the vertex in the advancing direction.
+        Un vértice es de Tipo 2 si el número de segmentos de la línea de barrido cambia al pasar por el vértice en la dirección de avance.
         """
         if not concave_indices:
             return []
@@ -219,7 +230,8 @@ class ConcaveDecomposer:
     def _classify_hole_type2_batch(polygon: Polygon, hole_coords: list,
                                     heading_rad: float) -> list[int]:
         """
-        Batch classify hole vertices as Type 2 using shared PreparedGeometry.
+        Batch classify hole vertices as Type 2 
+
         Returns indices into hole_coords that are Type 2.
         """
         if not hole_coords:
@@ -317,16 +329,12 @@ class ConcaveDecomposer:
                                    heading_rad: float,
                                    channel_width: float = 1.0) -> list[Polygon]:
         """
-        Connects an interior ring (obstacle) to the exterior boundary
-        by erasing a thin channel along the heading direction.
-
-        The resulting polygon has one fewer hole (absorbed into the
-        exterior as a concavity) which recursion will decompose.
-
-        channel_width is the TOTAL width of the erased corridor in meters.
-        Should be set to the spray swath width so the corridor is never
-        narrower than one swath — this prevents the boustrophedon planner
-        from generating micro-segments inside the channel.
+        Convierte un obstáculo interno en una concavidad del borde exterior mediante 
+        la creación de un pasillo en la dirección del barrido.
+    
+        El parámetro 'channel_width' debe coincidir con el ancho de labor para 
+        garantizar que el canal sea transitable por el robot en una sola pasada, 
+        evitando giros innecesarios o fragmentos de ruta demasiado pequeños.
         """
         vx, vy = vertex_coords
         hx, hy = np.cos(heading_rad), np.sin(heading_rad)
@@ -369,7 +377,7 @@ class ConcaveDecomposer:
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def _resolve_all_holes(polygon: Polygon, heading_rad: float,
+    def _connect_holes_into_exterior(polygon: Polygon, heading_rad: float,
                             max_iter: int = 100,
                             channel_width: float = 1.0) -> Polygon | list[Polygon]:
         """
@@ -423,32 +431,27 @@ class ConcaveDecomposer:
     @staticmethod
     def decompose(polygon: Polygon, heading_angle_deg: float,
                    depth: int = 0,
-                   channel_width: float = 1.0) -> list[Polygon]:
+                   channel_width: float = 1.0,
+                   min_swath: float = 0.0) -> list[Polygon]:
         """
         Recursive main function.
         Verifies if the polygon has concavities 'Type 2' that obstruct the flight
         at the given angle. If there are any, cuts the polygon and processes the parts.
 
-        :param polygon: Shapely Polygon (may contain holes/obstacles).
-        :param heading_angle_deg: Flight heading in degrees.
-        :param depth: Current recursion depth.
-        :param channel_width: Total width in meters of the corridor used to connect
-            interior holes to the exterior boundary. Should equal the spray swath
-            width so that the corridor is never narrower than one swath.
-        :return: List of convex polygons (or safe to fly).
         """
         if depth > 25:
             return [polygon]
 
+        polygon = orient(polygon, sign=1.0)
         heading_rad = np.radians(heading_angle_deg)
 
-        # --- Pre-step: resolve ALL holes iteratively ---
-        resolved = ConcaveDecomposer._resolve_all_holes(polygon, heading_rad, channel_width=channel_width)
+        # --- Pre-step: connect ALL holes into exterior iteratively ---
+        resolved = ConcaveDecomposer._connect_holes_into_exterior(polygon, heading_rad, channel_width=channel_width)
         if isinstance(resolved, list):
             result = []
             for sub in resolved:
                 sub = orient(sub, sign=1.0)
-                result.extend(ConcaveDecomposer.decompose(sub, heading_angle_deg, depth + 1, channel_width))
+                result.extend(ConcaveDecomposer.decompose(sub, heading_angle_deg, depth + 1, channel_width, min_swath))
             return result
         polygon = resolved
 
@@ -469,7 +472,7 @@ class ConcaveDecomposer:
                 polygon, coords[i], heading_rad
             )
             result, success = ConcaveDecomposer._validate_and_recurse(
-                polygon, sub_polygons, heading_angle_deg, depth, channel_width
+                polygon, sub_polygons, heading_angle_deg, depth, channel_width, min_swath
             )
             if success:
                 return result

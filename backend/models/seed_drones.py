@@ -1,5 +1,5 @@
 from backend.database import SessionLocal, engine, Base                                                    
-from backend.db.drone import Drone                                                                         
+from backend.models.drone_model import Drone                                                                         
 
 Base.metadata.create_all(bind=engine)                                                                      
                                                                                                              

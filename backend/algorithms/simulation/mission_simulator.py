@@ -193,7 +193,7 @@ def simulate_mission_with_rendezvous(route_segments, energy_model,
         # Si se dispone de un PathAssembler, usar la distancia real obstacle-aware
         # para que el fitness del GA refleje el costo verdadero del retorno.
         if assembler is not None:
-            _, d_back = assembler.safe_connection(uav_pos, resume_pos)
+            _, d_back = assembler.find_connection(uav_pos, resume_pos)
         else:
             d_back = math.hypot(resume_pos[0] - uav_pos[0], resume_pos[1] - uav_pos[1])
         e_back = energy_model.energy_transit(d_back, Q_rem)

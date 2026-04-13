@@ -7,6 +7,7 @@ from shapely.geometry import Polygon
 from shapely.geometry.polygon import orient
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FIELDS_DIR = os.path.join(ROOT, 'test_fields')
 
 # -- Colors --
 BG = '#16213e'
@@ -83,5 +84,5 @@ def resolve_json_path(json_arg):
     from field_picker import pick_json
     path = json_arg or pick_json(ROOT)
     if not os.path.isabs(path):
-        path = os.path.join(ROOT, path)
+        path = os.path.abspath(path)
     return path

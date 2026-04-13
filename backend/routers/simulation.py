@@ -5,10 +5,10 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
-from backend.db.mission import MissionStatus
-from backend.db.drone import Drone
+from backend.models.mission_model import MissionStatus
+from backend.models.drone_model import Drone
 from backend.services import mission_service, simulation_service
-from backend.services.route_builder import UAVRouteBuilder, UGVRouteBuilder
+from backend.services.route_builder_service import UAVRouteBuilder, UGVRouteBuilder
 from backend.schemas.simulation import SimulationConfig
 
 router = APIRouter(tags=["simulation"])

@@ -1,25 +1,25 @@
 from shapely.geometry import Polygon, LineString, Point
 
-from ..algorithms.optimization.strategy import StrategyFactory
-from ..algorithms.polygon.margin import MarginReducer
-from ..algorithms.rendezvous.segmentation import MissionSegmenter
-from ..algorithms.analysis import MissionAnalyzer
-from ..algorithms.drone.energy_model import DroneEnergyModel
-from ..algorithms.rendezvous.rendezvous_planner import RendezvousPlanner
-from ..db.drone import Drone
+from ..algorithms.routing.strategy import StrategyFactory
+from ..algorithms.coverage.margin import MarginReducer
+from ..algorithms.energy.segmentation import MissionSegmenter
+from ..algorithms.mission_analyzer import MissionAnalyzer
+from ..algorithms.energy.energy_model import DroneEnergyModel
+from ..algorithms.rendezvous.planner import RendezvousPlanner
+from ..models.drone_model import Drone
 
 
-class MissionController:
+class MissionPlanner:
     """
 Base orchestrator for mission planning. Subclasses define rendezvous
 infrastructure and segmentation strategy through hook methods.
 
 Responsibility map:
-    MissionController        — orchestrates the planning pipeline, creates the
+    MissionPlanner        — orchestrates the planning pipeline, creates the
                             shared DroneEnergyModel, and wires dependencies.
-    StaticMissionController  — static mission mode; base_point is the permanent
+    StaticMissionPlanner  — static mission mode; base_point is the permanent
                             logistics base.
-    DynamicMissionController — dynamic mission mode; builds RendezvousPlanner,
+    DynamicMissionPlanner — dynamic mission mode; builds RendezvousPlanner,
                             and treats base_point only as the UAV's initial
                             takeoff position.
     DroneEnergyModel         — physics model: energy costs and feasibility
@@ -317,7 +317,7 @@ Optimizer contract:
             if not combined:
                 combined.extend(path)
             else:
-                if MissionController._pts_equal(combined[-1], path[0]):
+                if MissionPlanner._pts_equal(combined[-1], path[0]):
                     combined.extend(path[1:])
                 else:
                     combined.extend(path)
@@ -329,7 +329,7 @@ Optimizer contract:
         return abs(a[0] - b[0]) < tol and abs(a[1] - b[1]) < tol
 
 
-class StaticMissionController(MissionController):#
+class StaticMissionPlanner(MissionPlanner):
     """
     base_point is the permanent logistics base: the drone departs from it,
     returns to it between every cycle, and the segmenter uses it as the fixed
@@ -341,16 +341,48 @@ class StaticMissionController(MissionController):#
         # deadhead costs during fitness evaluation (static deadhead mode).
         return energy_model, None
 
-    #ignores rendezvous_planner
     def _segment(self, segmenter, safe_polygon, route_segments, base_point, rendezvous_planner):
-        return segmenter.segment_path(
-            polygon=safe_polygon,
-            route_segments=route_segments,
-            base_point=base_point,
-        )
+        from ..algorithms.coverage.path_assembler import PathAssembler
+
+        assembler = PathAssembler(safe_polygon)
+
+        # Pasar función de distancia obstacle-aware al segmentador para que las
+        # estimaciones de costo de retorno reflejen el camino real alrededor de
+        # obstáculos, no la distancia euclidiana (que subestima para rutas cross-obstacle).
+        def _obstacle_dist(a, b):
+            _, d = assembler.find_connection(a, b)
+            return d
+
+        raw_cycles = segmenter.segment_path(route_segments, base_point, dist_fn=_obstacle_dist)
+        cycles = []
+
+        for cyc in raw_cycles:
+            work_segs = cyc["segments"]
+            if not work_segs:
+                continue
+            start_pt = cyc["start_pt"]
+            end_pt = cyc["end_pt"]
+
+            open_path, _ = assembler.find_connection(base_point, start_pt)
+            close_path, _ = assembler.find_connection(end_pt, base_point)
+            open_segs = segmenter._path_to_segments(open_path, "deadhead", False)
+            close_segs = segmenter._path_to_segments(close_path, "deadhead", False)
+
+            all_segs = open_segs + work_segs + close_segs
+            full_path = segmenter.segments_to_path(all_segs)
+            cycles.append({
+                "type": "work",
+                "path": full_path,
+                "segments": all_segs,
+                "visual_groups": segmenter.compress_segments(all_segs),
+                "swath_width": cyc["swath_width"],
+                "base_point": base_point,
+            })
+
+        return cycles
 
 
-class DynamicMissionController(MissionController):
+class DynamicMissionPlanner(MissionPlanner):
     """
     base_point is the UAV's initial takeoff position only. It is NOT a
     permanent logistics base: once the mission starts, all service stops
@@ -379,15 +411,11 @@ class DynamicMissionController(MissionController):
         return energy_model, rendezvous_planner
 
     def _segment(self, segmenter, safe_polygon, route_segments, base_point, rendezvous_planner):
-        return segmenter.segment_path_mobile(
-            polygon=safe_polygon,
-            route_segments=route_segments,
-            rendezvous_planner=rendezvous_planner,
-        )
+        return rendezvous_planner.plan_dynamic_cycles(segmenter, safe_polygon, route_segments)
 
     def _augment_metrics(self, full_metrics, opt_result, mission_cycles):
         # Extraer métricas de rendezvous de la misión realmente segmentada.
-        # Cada ciclo cerrado por segment_path_mobile() tiene 'rv_wait_s';
+        # Cada ciclo cerrado por plan_dynamic_cycles() tiene 'rv_wait_s';
         # el último ciclo (misión completa) no tiene esa clave.
         rv_waits = [c['rv_wait_s'] for c in mission_cycles if 'rv_wait_s' in c]
         full_metrics["rv_n_rendezvous"] = len(rv_waits)

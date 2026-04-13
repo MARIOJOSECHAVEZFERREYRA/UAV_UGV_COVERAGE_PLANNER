@@ -1,5 +1,5 @@
 import { MODE } from './modes.js'
-import { DRAW } from './colors.js'
+import { CYCLE_PALETTE, DRAW } from './colors.js'
 
 export const EMPTY_FC = {
   type: 'FeatureCollection',
@@ -51,6 +51,10 @@ export function getTrajectoryOpacity(highlight) {
   }
 }
 
+export function getCycleColor(cycleIndex = 0) {
+  return CYCLE_PALETTE[(cycleIndex ?? 0) % CYCLE_PALETTE.length]
+}
+
 export function getDrawColor(drawMode) {
   if (drawMode === MODE.DRAW_OBSTACLE) return DRAW.obstacle
   if (drawMode === MODE.DRAW_UGV_ROUTE) return DRAW.ugv
@@ -78,6 +82,51 @@ export function getEdgeLabelGroups(field, previewPoints, previewIsOpen = false) 
   }
 
   return groups
+}
+
+function getUniqueBasePoints(basePoints) {
+  const seen = new Set()
+
+  return (basePoints ?? []).filter(point => {
+    const key = `${point.x.toFixed(1)},${point.y.toFixed(1)}`
+
+    if (seen.has(key)) {
+      return false
+    }
+
+    seen.add(key)
+    return true
+  })
+}
+
+export function getMissionMarkers(waypoints, basePoints) {
+  const markers = []
+  const firstWaypoint = waypoints?.find(waypoint => waypoint.waypoint_type !== 'base')
+
+  if (firstWaypoint) {
+    markers.push({
+      key: 'marker-s',
+      label: 'S',
+      color: '#27ae60',
+      point: { x: firstWaypoint.x, y: firstWaypoint.y },
+    })
+  }
+
+  const uniqueBases = getUniqueBasePoints(basePoints)
+  const isMobileMission = uniqueBases.length > 1
+
+  uniqueBases.forEach((point, index) => {
+    const isLast = index === uniqueBases.length - 1
+
+    markers.push({
+      key: `marker-base-${index}`,
+      label: !isMobileMission ? 'Base' : isLast ? 'E' : `R${index + 1}`,
+      color: isLast ? '#8b5cf6' : '#e67e22',
+      point,
+    })
+  })
+
+  return markers
 }
 
 export function toLineFeatureCollection(runs, pointToCoordinates, getColor = null) {

@@ -1,15 +1,11 @@
+import FloatingPanel from './FloatingPanel.jsx'
+
 const DRAWING_HINT_STYLE = {
-  position: 'absolute',
   bottom: 24,
   left: '50%',
   transform: 'translateX(-50%)',
-  background: '#0d1117cc',
-  backdropFilter: 'blur(6px)',
-  border: '1px solid #21262d',
-  borderRadius: 8,
   padding: '8px 18px',
   fontSize: 13,
-  color: '#58a6ff',
   zIndex: 10,
 }
 
@@ -26,5 +22,9 @@ export default function DrawingHint({ mode }) {
     text = 'Click to add obstacle points · Right-click to undo · Press "Finish Obstacle" when done'
   }
 
-  return <div style={DRAWING_HINT_STYLE}>{text}</div>
+  return (
+    <FloatingPanel tone="accent" style={DRAWING_HINT_STYLE}>
+      {text}
+    </FloatingPanel>
+  )
 }
