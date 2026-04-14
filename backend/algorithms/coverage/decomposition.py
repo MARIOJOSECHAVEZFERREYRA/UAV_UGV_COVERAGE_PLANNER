@@ -12,7 +12,6 @@ class ConcaveDecomposer:
     Implementation of Phase 2: Concavity Detection and Decomposition.
     Based on Sections 2.3 and 2.4 of the paper by Li et al. (2023).
     """
-
     # ------------------------------------------------------------------ #
     #                        Private Helpers                              #
     # ------------------------------------------------------------------ #
@@ -324,17 +323,33 @@ class ConcaveDecomposer:
 
         return polys
 
+    # Thin topological slit used to detach holes from the exterior.
+    # The channel only needs to exist so shapely's boolean difference
+    # produces a valid split — it must NOT be wide enough to represent
+    # a drive-through corridor, because that would delete a full sweep
+    # row's worth of coverage per obstacle. BoustrophedonPlanner clips
+    # sweeps against the original holes natively, so the "lost" area
+    # along the slit is only ~2 × _SLIT_RADIUS per unit length.
+    _SLIT_RADIUS = 0.1  # metres (≈ 20 cm slit total, invisible at field scale)
+
     @staticmethod
     def _connect_hole_to_exterior(polygon: Polygon, vertex_coords: tuple,
                                    heading_rad: float,
                                    channel_width: float = 1.0) -> list[Polygon]:
-        """
-        Convierte un obstáculo interno en una concavidad del borde exterior mediante 
-        la creación de un pasillo en la dirección del barrido.
-    
-        El parámetro 'channel_width' debe coincidir con el ancho de labor para 
-        garantizar que el canal sea transitable por el robot en una sola pasada, 
-        evitando giros innecesarios o fragmentos de ruta demasiado pequeños.
+        """Absorb an interior hole into the exterior ring.
+
+        Cuts a razor-thin slit (≈ 20 cm total width) from the hole's
+        type-2 concave vertex in the sweep direction, crossing all
+        intermediate holes and reaching the outer boundary. The slit is
+        purely topological: it converts holes into exterior concavities
+        so the downstream decomposer can split at them. Sweep coverage
+        is handled independently by BoustrophedonPlanner clipping
+        against the original holes — that's why we must NOT carve a
+        swath-wide channel here (doing so would delete a full sweep
+        row along each channel, which was the previous bug).
+
+        The `channel_width` parameter is kept in the signature for
+        backward compatibility but is no longer used to scale the slit.
         """
         vx, vy = vertex_coords
         hx, hy = np.cos(heading_rad), np.sin(heading_rad)
@@ -348,7 +363,7 @@ class ConcaveDecomposer:
         dx = interior_sign * hx
         dy = interior_sign * hy
 
-        # Cast ray to EXTERIOR only — skip other holes so the channel
+        # Cast ray to EXTERIOR only — skip other holes so the slit
         # traverses any intermediate holes and absorbs them.
         hit_pt = ConcaveDecomposer._cast_ray_to_ring(
             polygon.exterior, vx, vy, dx, dy
@@ -362,8 +377,9 @@ class ConcaveDecomposer:
         p1 = Point(vx - ext * dx, vy - ext * dy)
         p2 = Point(hit_pt.x + ext * dx, hit_pt.y + ext * dy)
 
-        channel_radius = max(channel_width / 2.0, 0.5)
-        channel = LineString([p1, p2]).buffer(channel_radius, cap_style=2)
+        channel = LineString([p1, p2]).buffer(
+            ConcaveDecomposer._SLIT_RADIUS, cap_style=2,
+        )
         result = polygon.difference(channel)
 
         if isinstance(result, MultiPolygon):

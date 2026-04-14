@@ -31,7 +31,7 @@ class MissionCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
     field: FieldPolygon
     spray_width: float = Field(default=5.0, gt=0.0, le=50.0)
-    strategy: str = Field(default="genetic", pattern="^(genetic|simple)$")
+    strategy: str = Field(default="grid", pattern="^(grid|genetic)$")
     drone_name: str = Field(default="DJI Agras T30")
     app_rate: float | None = Field(
         default=None,

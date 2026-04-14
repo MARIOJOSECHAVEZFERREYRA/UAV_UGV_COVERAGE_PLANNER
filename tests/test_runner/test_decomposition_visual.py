@@ -5,7 +5,7 @@ import argparse
 import numpy as np
 
 import matplotlib.pyplot as plt
-from matplotlib.widgets import Slider, Button
+from matplotlib.widgets import Slider, Button, TextBox
 from shapely.geometry import Polygon, LineString, Point
 from shapely.geometry.polygon import orient
 
@@ -339,14 +339,25 @@ class Visualizer:
         self.ax_info.set_xlim(0, 1)
         self.ax_info.set_ylim(0, 1)
 
-        # slider
-        ax_sl = self.fig.add_axes([0.04, 0.09, 0.64, 0.03])
+        # slider (coarse, step=5)
+        ax_sl = self.fig.add_axes([0.04, 0.09, 0.54, 0.03])
         ax_sl.set_facecolor('#2d2d44')
         self.slider = Slider(ax_sl, 'Heading', 0, 175,
                              valinit=heading_deg, valstep=5, color=C_FIELD)
         self.slider.label.set_color('white')
         self.slider.valtext.set_color('white')
         self.slider.on_changed(self._on_angle)
+
+        # text box (fine, any integer 0-179)
+        ax_tb = self.fig.add_axes([0.62, 0.09, 0.06, 0.03])
+        ax_tb.set_facecolor('#2d2d44')
+        self.text_angle = TextBox(
+            ax_tb, '', initial=str(int(heading_deg)),
+            color='#2d2d44', hovercolor='#3d3d55',
+        )
+        self.text_angle.label.set_color('white')
+        self.text_angle.text_disp.set_color('white')
+        self.text_angle.on_submit(self._on_text_angle)
 
         # buttons
         bspec = [
@@ -389,7 +400,25 @@ class Visualizer:
         self._draw()
 
     def _on_angle(self, val):
-        pass
+        # Keep text box in sync with the slider.
+        self.text_angle.set_val(str(int(val)))
+
+    def _on_text_angle(self, text):
+        """Rebuild the step list at an arbitrary integer heading."""
+        try:
+            angle = int(float(text)) % 180
+        except (ValueError, TypeError):
+            return
+        self.heading_deg = angle
+        # Silence slider callback so it doesn't re-fire _on_text_angle.
+        self.slider.eventson = False
+        try:
+            self.slider.set_val(angle if angle % 5 == 0 else (angle // 5) * 5)
+        finally:
+            self.slider.eventson = True
+        self.steps = build_steps(self.base_poly, self.heading_deg)
+        self.idx = 0
+        self._draw()
 
     def _on_key(self, ev):
         {'n': self._next, 'p': self._prev,

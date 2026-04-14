@@ -120,6 +120,12 @@ class GeodesicSolver:
 
         path[0] == start and path[-1] == end exactly. distance is the
         euclidean length of the resulting polyline.
+
+        Robustness: if either endpoint is numerically inside a hole
+        (which can happen when sweep endpoints land on clipped borders
+        with floating-point drift), snap it to the nearest point just
+        outside the hole and retry A*. As a last resort return the
+        direct euclidean line with a warning instead of raising.
         """
         start = (float(start[0]), float(start[1]))
         end = (float(end[0]), float(end[1]))
@@ -130,10 +136,101 @@ class GeodesicSolver:
         if self._is_visible(start, end):
             return [start, end], math.hypot(end[0] - start[0], end[1] - start[1])
 
-        return self._astar(start, end)
+        try:
+            return self._astar(start, end)
+        except RuntimeError:
+            pass
+
+        # First retry: snap endpoints out of any containing hole.
+        s_snap = self._snap_outside_holes(start)
+        e_snap = self._snap_outside_holes(end)
+        if s_snap != start or e_snap != end:
+            try:
+                path, dist = self._astar(s_snap, e_snap)
+                # Do NOT replace the snapped first/last points with the
+                # originals — doing so creates a direct line from start
+                # to the A* path's second point that may cross a hole.
+                # Instead, INSERT the original endpoints as tiny
+                # connecting hops at each end of the snapped route.
+                if path:
+                    if tuple(start) != tuple(path[0]):
+                        dist += math.hypot(
+                            start[0] - path[0][0], start[1] - path[0][1],
+                        )
+                        path = [start] + path
+                    if tuple(end) != tuple(path[-1]):
+                        dist += math.hypot(
+                            end[0] - path[-1][0], end[1] - path[-1][1],
+                        )
+                        path = path + [end]
+                return path, dist
+            except RuntimeError:
+                pass
+
+        # Last resort: direct euclidean fallback (may cross a hole in
+        # degenerate cases). Better than crashing the full mission.
+        import warnings
+        warnings.warn(
+            "GeodesicSolver: A* failed from {} to {}; "
+            "falling back to direct euclidean line".format(start, end),
+            stacklevel=2,
+        )
+        return [start, end], math.hypot(end[0] - start[0], end[1] - start[1])
 
     # ------------------------------------------------------------------
-    # A*
+    # Endpoint snapping (numerical robustness)
+    # ------------------------------------------------------------------
+
+    _SNAP_EPSILON = 1e-4
+
+    def _snap_outside_holes(self, pt):
+        """Push `pt` just outside any hole that contains or touches it.
+
+        Uses shapely's nearest-point-on-boundary + a tiny outward nudge.
+        Points strictly inside a hole AND points lying exactly on a hole
+        boundary both need snapping, because A* visibility from a
+        boundary point toward hole vertices can fail when every ray
+        grazes the interior. Only points strictly outside (distance to
+        holes > epsilon) are left unchanged.
+        """
+        if self._holes_union is None:
+            return pt
+        from shapely.geometry import Point
+        p = Point(pt)
+        # Points strictly outside have a positive distance to the holes.
+        if p.distance(self._holes_union) > self._SNAP_EPSILON:
+            return pt
+
+        # Project onto the boundary and then push outward by epsilon.
+        boundary = self._holes_union.boundary
+        from shapely.ops import nearest_points
+        _, nearest = nearest_points(p, boundary)
+        nx, ny = nearest.x, nearest.y
+        dx = nx - pt[0]
+        dy = ny - pt[1]
+        norm = math.hypot(dx, dy)
+
+        if norm < 1e-12:
+            # pt lies exactly on the boundary — we need an outward normal.
+            # Approximate it by trying 4 cardinal directions and picking
+            # the first that lands strictly outside all holes.
+            for step_dx, step_dy in ((1, 0), (-1, 0), (0, 1), (0, -1),
+                                     (1, 1), (-1, 1), (1, -1), (-1, -1)):
+                eps = self._SNAP_EPSILON * 10.0  # bigger nudge for degenerate case
+                cand = (pt[0] + step_dx * eps, pt[1] + step_dy * eps)
+                if Point(cand).distance(self._holes_union) > self._SNAP_EPSILON:
+                    return cand
+            # Fallback: give up with a best-effort nudge.
+            return (pt[0] + self._SNAP_EPSILON, pt[1])
+
+        # Move from pt past the boundary point by an extra epsilon in
+        # the direction AWAY from the hole interior.
+        ux = dx / norm
+        uy = dy / norm
+        return (nx + ux * self._SNAP_EPSILON, ny + uy * self._SNAP_EPSILON)
+
+    # ------------------------------------------------------------------
+    # A* ALGORITMH
     # ------------------------------------------------------------------
 
     def _astar(self, start, end):

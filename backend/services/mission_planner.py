@@ -52,7 +52,7 @@ Optimizer contract:
     def __init__(self):
         self.last_result = None
 
-    def run_mission_planning(self, db, polygon_points, drone_name, overrides, base_point, strategy_name="genetic", precalculated_route_segments=None, obstacle_polygons=None):
+    def run_mission_planning(self, db, polygon_points, drone_name, overrides, base_point, strategy_name="grid", precalculated_route_segments=None, obstacle_polygons=None):
         
         # 1. Get the drone info and build the single energy model used across the mission.
         drone, energy_model = self._load_drone_and_energy_model(db, drone_name)
@@ -346,14 +346,21 @@ class StaticMissionPlanner(MissionPlanner):
 
         assembler = PathAssembler(safe_polygon)
 
-        # Pasar función de distancia obstacle-aware al segmentador para que las
-        # estimaciones de costo de retorno reflejen el camino real alrededor de
-        # obstáculos, no la distancia euclidiana (que subestima para rutas cross-obstacle).
+        # Obstacle-aware distance callback — the segmenter uses dist_fn
+        # as a lower bound on return-to-base cost during feasibility
+        # checks. The route itself is preserved verbatim; segment_path
+        # is a pure ordered slicer.
         def _obstacle_dist(a, b):
             _, d = assembler.find_connection(a, b)
             return d
 
-        raw_cycles = segmenter.segment_path(route_segments, base_point, dist_fn=_obstacle_dist)
+        # Ordered-slicer segmentation: preserves the exact order of
+        # route_segments, groups them into spatial runs, and packs
+        # runs into cycles without crossing spatial boundaries. See
+        # segment_path docstring for details.
+        raw_cycles = segmenter.segment_path(
+            route_segments, base_point, dist_fn=_obstacle_dist,
+        )
         cycles = []
 
         for cyc in raw_cycles:

@@ -24,7 +24,7 @@ def main():
     parser.add_argument('--tank', type=float, default=None, help='Override tank (L)')
     parser.add_argument('--speed', type=float, default=5.0, help='m/s')
     parser.add_argument('--app-rate', type=float, default=20.0, help='L/ha')
-    parser.add_argument('--strategy', default='genetic', choices=['genetic', 'simple'])
+    parser.add_argument('--strategy', default='grid', choices=['grid', 'genetic'])
     parser.add_argument('--save-stats', action='store_true', help='Save GA stats to data/test_results/ga_stats.json')
     args = parser.parse_args()
 

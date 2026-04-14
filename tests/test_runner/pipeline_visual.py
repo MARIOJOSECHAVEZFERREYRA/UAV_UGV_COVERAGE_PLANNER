@@ -17,7 +17,7 @@ import os
 import argparse
 
 import matplotlib.pyplot as plt
-from matplotlib.widgets import Button
+from matplotlib.widgets import Button, TextBox
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, '..', 'backend'))
@@ -171,8 +171,10 @@ class PipelineVisualizer:
         self.sl_margin = make_slider(
             self.fig, [0.06, 0.23, 0.60, 0.022],
             'Margin (m)', 0.0, 15.0, margin, 0.5, C_SAFE)
+        # Heading slider is coarse (step 5°); the text box beside it lets
+        # the user enter any integer angle for finer control.
         self.sl_angle = make_slider(
-            self.fig, [0.06, 0.20, 0.60, 0.022],
+            self.fig, [0.06, 0.20, 0.53, 0.022],
             'Heading (°)', 0, 175, heading_deg, 5, C_RAW)
         self.sl_swath = make_slider(
             self.fig, [0.06, 0.17, 0.60, 0.022],
@@ -180,6 +182,16 @@ class PipelineVisualizer:
 
         for sl in (self.sl_margin, self.sl_angle, self.sl_swath):
             sl.on_changed(self._on_param)
+
+        # Heading text box — any integer 0..179. Kept in sync with slider.
+        ax_tb = self.fig.add_axes([0.605, 0.20, 0.055, 0.022])
+        ax_tb.set_facecolor('#2d2d44')
+        self.tb_angle = TextBox(
+            ax_tb, '', initial=str(int(heading_deg)),
+            color='#2d2d44', hovercolor='#3d3d55',
+        )
+        self.tb_angle.text_disp.set_color('white')
+        self.tb_angle.on_submit(self._on_angle_text)
 
         # ── Toggle buttons (3 rows × 4) ───────────────────────────────── #
         bw, bh, gx, gy = 0.155, 0.027, 0.006, 0.004
@@ -216,6 +228,36 @@ class PipelineVisualizer:
     # ------------------------------------------------------------------ #
 
     def _on_param(self, _=None):
+        # Slider moved — sync the angle text box to match.
+        if hasattr(self, 'tb_angle'):
+            current = str(int(self.sl_angle.val))
+            if self.tb_angle.text != current:
+                # Suppress on_submit fire when we programmatically set text.
+                self.tb_angle.eventson = False
+                try:
+                    self.tb_angle.set_val(current)
+                finally:
+                    self.tb_angle.eventson = True
+        self._draw()
+
+    def _on_angle_text(self, text):
+        """Set heading to any integer 0..179 from the text box."""
+        try:
+            angle = int(float(text)) % 180
+        except (ValueError, TypeError):
+            return
+        # Snap slider to nearest multiple of 5 (its valstep) without
+        # triggering _on_param, then set the real angle and redraw.
+        snap = (angle // 5) * 5
+        self.sl_angle.eventson = False
+        try:
+            self.sl_angle.set_val(snap)
+            # Override the slider value with the exact integer so _draw
+            # uses the user-typed angle, not the snapped one.
+            self.sl_angle.val = float(angle)
+            self.sl_angle.valtext.set_text(f'{angle}')
+        finally:
+            self.sl_angle.eventson = True
         self._draw()
 
     def _missing_deps(self, key):

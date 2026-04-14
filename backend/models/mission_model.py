@@ -34,7 +34,7 @@ class Mission(Base):
 
     # Planning config
     spray_width: Mapped[float] = mapped_column(Float, default=5.0)
-    strategy: Mapped[str] = mapped_column(String(32), default="genetic")
+    strategy: Mapped[str] = mapped_column(String(32), default="grid")
     drone_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     overrides_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 

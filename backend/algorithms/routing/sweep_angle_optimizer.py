@@ -14,7 +14,6 @@ from shapely.ops import unary_union
 from shapely import affinity
 
 from ..coverage.decomposition import ConcaveDecomposer
-from ..coverage.path_planner import BoustrophedonPlanner
 from ..coverage.path_assembler import PathAssembler
 from ..simulation.mission_simulator import simulate_mission_with_rendezvous
 
@@ -34,7 +33,7 @@ class SweepAngleOptimizer:
     def __init__(self, planner, pop_size=200, generations=300, crossover_rate=0.4,
                  mutation_rate=0.05, mutation_range=15, min_diversity=20,
                  early_stopping_patience=50, energy_model=None,
-                 rendezvous_planner=None, w_rv=0.5,
+                 rendezvous_planner=None, w_rv=0.5, cycle_penalty_s=0.0,
     ):
         self.planner = planner
         self.pop_size = pop_size
@@ -47,6 +46,11 @@ class SweepAngleOptimizer:
         self.energy_model = energy_model
         self.rendezvous_planner = rendezvous_planner
         self.w_rv = float(w_rv)
+        # Tuning weight for the per-extra-cycle penalty added to
+        # mission_time. Default 0 = hot-swap assumption, cycles
+        # penalized only via their deadhead distance. See
+        # GridSearchOptimizer for the same parameter and rationale.
+        self.cycle_penalty_s = float(cycle_penalty_s)
         # _rv_enabled: dynamic mode — co-simulate rendezvous during fitness evaluation.
         # _static_deadhead_enabled: static mode — estimate intermediate deadhead costs
         #   so the GA can co-optimize sweep angle with deadhead distance.
@@ -55,24 +59,12 @@ class SweepAngleOptimizer:
         self._static_deadhead_enabled = energy_model is not None and rendezvous_planner is None
 
     def _estimate_static_deadhead(self, route_segments, base_point):
-        """
-        Estimates total intermediate deadhead distance for a static mission.
+        """Euclidean walk mirroring MissionSegmenter.segment_path.
 
-        Walks route_segments tracking energy and reagent using the same physics
-        predicates as MissionSegmenter.segment_path(), but without the geometry
-        overhead (find_connection, PathAssembler, atomic expansion).
-
-        Cycle boundaries are detected using feasible_after_segment_static().
-        When a break is found, the round-trip distance (cycle_end → base → next_start)
-        is accumulated. Distances are Euclidean — an acceptable approximation for
-        fitness comparison between candidate angles.
-
-        The d_entry (base → first route point) is already included in total_l by
-        _evaluate_angle; this method only accumulates INTERMEDIATE deadheads.
-
-        Returns
-        -------
-        float : estimated total intermediate deadhead in meters
+        Returns (deadhead_total_m, n_cycles) so the caller can use the
+        cycle count for mission-time fitness (refill + recharge
+        penalty). Distances remain euclidean; this is a fitness-only
+        estimate, the real geodesic path is produced downstream.
         """
         em = self.energy_model
         drone = em.drone
@@ -82,6 +74,7 @@ class SweepAngleOptimizer:
         q_rem = float(drone.mass_tank_full_kg)
         deadhead_total = 0.0
         cycle_empty = True
+        cycle_breaks = 0
         uav_x, uav_y = bx, by
 
         # Deduct entry transit cost so resource tracking is consistent with
@@ -129,6 +122,7 @@ class SweepAngleOptimizer:
                 d_back = math.hypot(uav_x - bx, uav_y - by)
                 d_fwd = math.hypot(p1x - bx, p1y - by)
                 deadhead_total += d_back + d_fwd
+                cycle_breaks += 1
 
                 # Reset resources and deduct entry cost for the new cycle
                 e_rem = em.usable_energy_wh()
@@ -148,7 +142,40 @@ class SweepAngleOptimizer:
                 uav_x, uav_y = p2x, p2y
                 cycle_empty = False
 
-        return deadhead_total
+        n_cycles = cycle_breaks + 1 if route_segments else 0
+        return deadhead_total, n_cycles
+
+    def _compute_mission_time(self, spray_m, ferry_m, deadhead_m, n_cycles, n_turns=0):
+        """Total mission time in seconds — same formula as GridSearchOptimizer.
+
+        Flight time pondera cada tipo de segmento por su velocidad real
+        y añade `drone.turn_duration_s` por cada turn entre sweep rows.
+        Penalty por cycles extras = `cycle_penalty_s * (n_cycles-1)`;
+        default 0 asume hot-swap battery → cycles penalizados solo por
+        su deadhead extra.
+        """
+        if self.energy_model is not None:
+            drone = self.energy_model.drone
+            v_cruise = float(getattr(drone, 'speed_cruise_ms', 5.0))
+            v_max = float(getattr(drone, 'speed_max_ms', v_cruise * 1.5))
+            turn_s = float(getattr(drone, 'turn_duration_s', 10.0))
+        else:
+            v_cruise = 5.0
+            v_max = 10.0
+            turn_s = 10.0
+
+        v_cruise = max(v_cruise, 0.1)
+        v_max = max(v_max, 0.1)
+
+        flight_time_s = (
+            spray_m / v_cruise +
+            ferry_m / v_max +
+            deadhead_m / v_max +
+            n_turns * turn_s
+        )
+        cycle_penalty = self.cycle_penalty_s * max(n_cycles - 1, 0)
+        mission_time_s = flight_time_s + cycle_penalty
+        return mission_time_s, flight_time_s
 
     def _evaluate_angle(self, angle_deg: int, polygon: Polygon, target_area_S: float, obstacle_union=None, base_point=None,
     ) -> dict:
@@ -209,22 +236,34 @@ class SweepAngleOptimizer:
         combined_path = assembly_result.get("combined_path", [])
         route_distances = assembly_result.get("distances", {})
 
-        total_l = float(route_distances.get("total_m", 0.0))
+        ferry_m = float(route_distances.get("ferry_m", 0.0))
+        deadhead_m = 0.0
+        n_cycles = 1
 
-        # Include round-trip deadhead cost so the fitness reflects full mission cost,
-        # not just infield path length. base_point is outside the polygon; the assembler
-        # falls through to the boundary-walk path, which is correct for that case.
+        # Deadhead: base→first + last→base + intermediate per-cycle.
+        # base_point is outside the polygon; the assembler handles that
+        # via its geodesic solver.
         if base_point is not None and route_segments:
             base_pt = (float(base_point[0]), float(base_point[1]))
             _, d_entry = assembler.find_connection(base_pt, route_segments[0]["path"][0])
             _, d_exit = assembler.find_connection(route_segments[-1]["path"][-1], base_pt)
-            total_l += d_entry + d_exit
+            deadhead_m += d_entry + d_exit
 
-            # Static mode: estimate intermediate per-cycle deadheads so the GA
-            # co-optimizes sweep angle with deadhead distance, not just route length.
-            # O(N_route_segments) — negligible overhead vs. the rest of this method.
             if self._static_deadhead_enabled:
-                total_l += self._estimate_static_deadhead(route_segments, base_pt)
+                intermediate, n_cycles = self._estimate_static_deadhead(
+                    route_segments, base_pt,
+                )
+                deadhead_m += intermediate
+
+        # Fitness = total mission time (seconds). Weights each segment
+        # by its real flight speed, adds turn_duration_s per turn, and
+        # applies an optional cycle penalty. See _compute_mission_time
+        # docstring for details.
+        mission_time_s, flight_time_s = self._compute_mission_time(
+            total_spray_distance, ferry_m, deadhead_m, n_cycles,
+            n_turns=total_turn_count,
+        )
+        total_l = mission_time_s
 
         # Simulacion de mision con rendezvous (solo si hay drone + UGV configurados)
         rv_feasible = True
@@ -247,6 +286,12 @@ class SweepAngleOptimizer:
         return {
             "angle": angle_deg,
             "l": total_l,
+            "mission_time_s": mission_time_s,
+            "flight_time_s": flight_time_s,
+            "n_cycles": n_cycles,
+            "spray_m": float(total_spray_distance),
+            "ferry_m": ferry_m,
+            "deadhead_m": deadhead_m,
             "s_prime": total_s_prime,
             "combined_path": combined_path,
             "route_segments": route_segments,
@@ -257,7 +302,7 @@ class SweepAngleOptimizer:
             },
             "route_distances": {
                 "sweep_m": float(route_distances.get("sweep_m", 0.0)),
-                "ferry_m": float(route_distances.get("ferry_m", 0.0)),
+                "ferry_m": ferry_m,
                 "total_m": float(route_distances.get("total_m", 0.0)),
             },
             # Metricas de rendezvous (0/True cuando rv no esta habilitado)
@@ -532,21 +577,12 @@ class SweepAngleOptimizer:
             if f > best_abs_fitness:
                 best_abs_fitness = f
                 extra_cov = abs(m["s_prime"] - target_area_S) / target_area_S * 100.0
-                best_solution = {
-                    "angle": m["angle"],
-                    "fitness": f,
-                    "l": m["l"],
-                    "s_prime": m["s_prime"],
-                    "extra_coverage_pct": extra_cov,
-                    "route_segments": m.get("route_segments", []),
-                    "combined_path": m.get("combined_path", []),
-                    "planner_metrics": m.get("planner_metrics", {}),
-                    "route_distances": m.get("route_distances", {}),
-                    "rv_feasible": m.get("rv_feasible", True),
-                    "rv_wait": m.get("rv_wait", 0.0),
-                    "rv_time": m.get("rv_time", 0.0),
-                    "rv_count": m.get("rv_count", 0),
-                }
+                # Preserve all keys from the cache entry (including the
+                # mission-time fitness metadata: spray_m, ferry_m,
+                # deadhead_m, n_cycles, mission_time_s, flight_time_s).
+                best_solution = dict(m)
+                best_solution["fitness"] = f
+                best_solution["extra_coverage_pct"] = extra_cov
 
         if best_solution is None:
             if self._rv_enabled:
@@ -564,10 +600,15 @@ class SweepAngleOptimizer:
             best_solution, polygon, obstacle_union, base_point,
         )
 
+        mission_min = best_solution['l'] / 60.0
         print(
             f"SweepAngleOptimizer done. Best angle: {best_solution['angle']}°, "
             f"fitness: {best_abs_fitness:.4f} (fixed-norm), "
-            f"flight dist: {best_solution['l']:.1f} m, "
+            f"mission={mission_min:.1f}min "
+            f"({best_solution.get('n_cycles', '?')} cycles)  "
+            f"spray={best_solution.get('spray_m', 0):.0f}m  "
+            f"ferry={best_solution.get('ferry_m', 0):.0f}m  "
+            f"deadhead={best_solution.get('deadhead_m', 0):.0f}m  "
             f"extra coverage: {best_solution['extra_coverage_pct']:.2f}%"
         )
 
@@ -613,10 +654,39 @@ class SweepAngleOptimizer:
             base_point=base_point,
         )
         assembly = assembler.assemble_connected(all_sweep_segments)
+        route_segments = assembly.get("route_segments", [])
 
         best_solution = dict(best_solution)
-        best_solution["route_segments"] = assembly.get("route_segments", [])
+        best_solution["route_segments"] = route_segments
         best_solution["combined_path"] = assembly.get("combined_path", [])
         best_solution["route_distances"] = assembly.get("distances", {})
+
+        # Recompute mission time with the 'full' geodesic ferries so the
+        # final 'l' (mission_time_s) reflects the real emitted route.
+        spray_m = float(best_solution.get("spray_m", 0.0))
+        ferry_m = float(assembly.get("distances", {}).get("ferry_m", 0.0))
+        deadhead_m = 0.0
+        n_cycles = 1
+        if base_point is not None and route_segments:
+            bp = (float(base_point[0]), float(base_point[1]))
+            _, d_entry = assembler.find_connection(bp, route_segments[0]["path"][0])
+            _, d_exit = assembler.find_connection(route_segments[-1]["path"][-1], bp)
+            deadhead_m += d_entry + d_exit
+            if self._static_deadhead_enabled:
+                intermediate, n_cycles = self._estimate_static_deadhead(
+                    route_segments, bp,
+                )
+                deadhead_m += intermediate
+
+        turns = int(best_solution.get('planner_metrics', {}).get('turn_count', 0))
+        mission_time_s, flight_time_s = self._compute_mission_time(
+            spray_m, ferry_m, deadhead_m, n_cycles, n_turns=turns,
+        )
+        best_solution["ferry_m"] = ferry_m
+        best_solution["deadhead_m"] = deadhead_m
+        best_solution["n_cycles"] = n_cycles
+        best_solution["mission_time_s"] = mission_time_s
+        best_solution["flight_time_s"] = flight_time_s
+        best_solution["l"] = mission_time_s
 
         return best_solution

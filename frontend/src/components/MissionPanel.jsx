@@ -419,8 +419,8 @@ function ParametersSection({
       <div>
         <div style={s.label}>Planning strategy</div>
         <select style={s.select} value={strategy} onChange={e => setStrategy(e.target.value)}>
+          <option value="grid">Grid Search (exhaustivo, recomendado)</option>
           <option value="genetic">Genetic Algorithm (GA)</option>
-          <option value="simple">Simple Grid</option>
         </select>
       </div>
     </div>
@@ -601,7 +601,7 @@ export default function MissionPanel({
   const [speed, setSpeed]           = useState('')
   const [appRate, setAppRate]       = useState('')
   const [margin, setMargin]         = useState('')
-  const [strategy, setStrategy]     = useState('genetic')
+  const [strategy, setStrategy]     = useState('grid')
   const [ugvSpeed, setUgvSpeed]     = useState(2.0)
   const [ugvTService, setUgvTService] = useState(300)
   const [mission, setMission]       = useState(null)
