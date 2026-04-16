@@ -8,22 +8,18 @@ from shapely.prepared import prep
 
 
 class ConcaveDecomposer:
+    """Type-2 concavity decomposition (Li et al. 2023, sec. 2.3–2.4).
+
+    Cuts a polygon along type-2 concave vertices so each sub-polygon
+    can be covered by a single boustrophedon pass in the given heading.
+    Holes are first absorbed into the exterior via a thin topological
+    slit so they also appear as cuttable concavities.
     """
-    Implementation of Phase 2: Concavity Detection and Decomposition.
-    Based on Sections 2.3 and 2.4 of the paper by Li et al. (2023).
-    """
-    # ------------------------------------------------------------------ #
-    #                        Private Helpers                              #
-    # ------------------------------------------------------------------ #
 
     @staticmethod
     def _find_interior_direction(polygon: Polygon, vx: float, vy: float,
                                   hx: float, hy: float) -> float | None:
-        """
-        Determine which side of the heading direction (+1 or -1)
-        points into the polygon interior from the vertex (vx, vy).
-        Returns +1.0, -1.0, or None if neither side is interior.
-        """
+        """Return +1/-1 for the heading side that points inward, or None."""
         eps = max(0.5, polygon.length * 0.002)
         for sign in (+1.0, -1.0):
             test_pt = Point(vx + sign * eps * hx, vy + sign * eps * hy)
@@ -33,9 +29,7 @@ class ConcaveDecomposer:
 
     @staticmethod
     def _extract_hit_points(intersection) -> list[Point]:
-        """
-        Procesa cualquier resultado de intersección geométrica para extraer exclusivamente los puntos de contacto, ignorando superposiciones de líneas o resultados vacíos.
-        """
+        """Return only the Point hits from an intersection result."""
         if intersection.is_empty:
             return []
         if intersection.geom_type == 'Point':
@@ -51,9 +45,7 @@ class ConcaveDecomposer:
     def _cast_ray_to_boundary(polygon: Polygon, vx: float, vy: float,
                                dx: float, dy: float,
                                ray_len: float = 1e6) -> Point | None:
-        """
-        Proyecta un rayo desde un vértice y devuelve el punto de impacto MAS cercano contra cualquier borde del polígono (exterior o interior) para determinar el límite de un corte.
-        """
+        """Nearest hit of a ray from (vx,vy) against exterior + interiors."""
         origin = Point(vx, vy)
         far_pt = (vx + ray_len * dx, vy + ray_len * dy)
         ray_line = LineString([(vx, vy), far_pt])
@@ -78,9 +70,7 @@ class ConcaveDecomposer:
     def _cast_ray_to_ring(ring, vx: float, vy: float,
                            dx: float, dy: float,
                            ray_len: float = 1e6) -> Point | None:
-        """
-        Proyecta rayo de vertice hacia un punto espeficico
-        """
+        """Nearest hit of a ray from (vx,vy) against a single ring."""
         origin = Point(vx, vy)
         ray_line = LineString([(vx, vy), (vx + ray_len * dx, vy + ray_len * dy)])
         candidates = ConcaveDecomposer._extract_hit_points(ray_line.intersection(ring))
@@ -107,9 +97,7 @@ class ConcaveDecomposer:
                                depth: int,
                                channel_width: float = 1.0,
                                min_swath: float = 0.0) -> tuple[list[Polygon], bool]:
-        """
-        Filtro de seguridad que valida que cada división del polígono sea geométricamente lógica y útil.
-        """
+        """Reject degenerate splits and recurse into the remaining pieces."""
         valid_subs = [
             s for s in sub_polygons
             if s.area > 0.1 and (
@@ -120,7 +108,7 @@ class ConcaveDecomposer:
         if not valid_subs:
             return [], False
 
-        # Chequeo de deteccion de cortes inutiles (degeneracion)
+        # Reject splits that failed to reduce the polygon meaningfully.
         if len(valid_subs) == 1:
             v = valid_subs[0]
             if (len(list(v.interiors)) >= len(list(polygon.interiors))
@@ -138,17 +126,9 @@ class ConcaveDecomposer:
             )
         return result, True
 
-    # ------------------------------------------------------------------ #
-    #                      Detection Methods                              #
-    # ------------------------------------------------------------------ #
-
     @staticmethod
     def _find_concave_indices(coords: list) -> list[int]:
-        """
-        Retorna los INDICES de todos los vertices concavos en una pasada
-
-        In CCW winding, a negative cross product indicates a right turn (concavity).
-        """
+        """Return indices of concave vertices (right turns under CCW)."""
         n = len(coords)
         concave = []
         for i in range(n):
@@ -166,9 +146,7 @@ class ConcaveDecomposer:
     def _count_sweep_segments(polygon: Polygon, prepared_polygon,
                                pt: np.ndarray, heading: np.ndarray,
                                ray: float = 1e5) -> int:
-        """
-        proyecta una línea de barrido virtual a través del polígono y cuenta n segmentos continuos en los que se divide al intersecar con su interior.
-        """
+        """Count how many pieces a virtual sweep line through `pt` splits into."""
         sweep = LineString([
             (pt[0] - ray * heading[0], pt[1] - ray * heading[1]),
             (pt[0] + ray * heading[0], pt[1] + ray * heading[1]),
@@ -196,10 +174,10 @@ class ConcaveDecomposer:
     def _classify_type2_batch(polygon: Polygon, coords: list,
                                concave_indices: list[int],
                                heading_rad: float) -> list[int]:
-        """
-        Clasifica todos los vértices exteriores cóncavos como tipo 2 por lote.
+        """Return the subset of concave vertices that are type-2.
 
-        Un vértice es de Tipo 2 si el número de segmentos de la línea de barrido cambia al pasar por el vértice en la dirección de avance.
+        A vertex is type-2 when the number of sweep-line segments
+        changes as the sweep advances past it.
         """
         if not concave_indices:
             return []
@@ -208,7 +186,6 @@ class ConcaveDecomposer:
         heading = np.array([np.cos(heading_rad), np.sin(heading_rad)])
         advancing = np.array([-np.sin(heading_rad), np.cos(heading_rad)])
 
-        # Build spatial index ONCE for all vertices
         prepared = prep(polygon)
 
         type2 = []
@@ -228,11 +205,7 @@ class ConcaveDecomposer:
     @staticmethod
     def _classify_hole_type2_batch(polygon: Polygon, hole_coords: list,
                                     heading_rad: float) -> list[int]:
-        """
-        Batch classify hole vertices as Type 2 
-
-        Returns indices into hole_coords that are Type 2.
-        """
+        """Type-2 classification for a hole's vertices (same criterion as exterior)."""
         if not hole_coords:
             return []
 
@@ -256,20 +229,10 @@ class ConcaveDecomposer:
 
         return type2
 
-    # ------------------------------------------------------------------ #
-    #                       Cutting Operations                            #
-    # ------------------------------------------------------------------ #
-
     @staticmethod
     def _split_polygon_at_vertex(polygon: Polygon, vertex_coords: tuple,
                                   heading_rad: float) -> list[Polygon]:
-        """
-        Cuts the polygon with a one-sided ray from the T2 vertex inward,
-        parallel to the heading direction.
-
-        The ray originates at the concave vertex, points toward the polygon
-        interior, and terminates at the first boundary hit.
-        """
+        """Cut the polygon with a ray from a type-2 vertex along the heading."""
         vx, vy = vertex_coords
         hx, hy = np.cos(heading_rad), np.sin(heading_rad)
 
@@ -302,15 +265,15 @@ class ConcaveDecomposer:
 
         polys = _attempt_split(p2)
 
-        # Check degenerate (collinear — split returned the same polygon)
+        # Degenerate: cut collinear with an edge returned the same polygon.
         if len(polys) == 1:
             diff_holes = len(list(polys[0].interiors)) - len(list(polygon.interiors))
             if diff_holes == 0 and abs(polys[0].area - polygon.area) < 1e-6:
                 polys = []
 
-        # Collinear failure — perturb angle to force transverse crossing
+        # Retry with a tiny angle nudge to force a transverse crossing.
         if not polys:
-            angle_perturbation = 0.01  # ~0.6 degrees
+            angle_perturbation = 0.01
             new_angle = heading_rad + angle_perturbation
             new_dx = interior_sign * np.cos(new_angle)
             new_dy = interior_sign * np.sin(new_angle)
@@ -323,33 +286,21 @@ class ConcaveDecomposer:
 
         return polys
 
-    # Thin topological slit used to detach holes from the exterior.
-    # The channel only needs to exist so shapely's boolean difference
-    # produces a valid split — it must NOT be wide enough to represent
-    # a drive-through corridor, because that would delete a full sweep
-    # row's worth of coverage per obstacle. BoustrophedonPlanner clips
-    # sweeps against the original holes natively, so the "lost" area
-    # along the slit is only ~2 × _SLIT_RADIUS per unit length.
-    _SLIT_RADIUS = 0.1  # metres (≈ 20 cm slit total, invisible at field scale)
+    # Razor-thin slit used only to split topology; must NOT be
+    # swath-wide or we would delete a sweep row per obstacle. The
+    # BoustrophedonPlanner clips sweeps against the real holes later.
+    _SLIT_RADIUS = 0.1
 
     @staticmethod
     def _connect_hole_to_exterior(polygon: Polygon, vertex_coords: tuple,
                                    heading_rad: float,
                                    channel_width: float = 1.0) -> list[Polygon]:
-        """Absorb an interior hole into the exterior ring.
+        """Absorb a hole into the exterior via a thin topological slit.
 
-        Cuts a razor-thin slit (≈ 20 cm total width) from the hole's
-        type-2 concave vertex in the sweep direction, crossing all
-        intermediate holes and reaching the outer boundary. The slit is
-        purely topological: it converts holes into exterior concavities
-        so the downstream decomposer can split at them. Sweep coverage
-        is handled independently by BoustrophedonPlanner clipping
-        against the original holes — that's why we must NOT carve a
-        swath-wide channel here (doing so would delete a full sweep
-        row along each channel, which was the previous bug).
-
-        The `channel_width` parameter is kept in the signature for
-        backward compatibility but is no longer used to scale the slit.
+        Cuts from a type-2 concave vertex of the hole along the heading
+        direction until it reaches the exterior, crossing any
+        intermediate holes on the way. `channel_width` is kept for
+        signature compatibility and no longer affects the slit width.
         """
         vx, vy = vertex_coords
         hx, hy = np.cos(heading_rad), np.sin(heading_rad)
@@ -363,16 +314,16 @@ class ConcaveDecomposer:
         dx = interior_sign * hx
         dy = interior_sign * hy
 
-        # Cast ray to EXTERIOR only — skip other holes so the slit
-        # traverses any intermediate holes and absorbs them.
+        # Ray casts only against the exterior so intermediate holes
+        # are absorbed along the slit instead of stopping it.
         hit_pt = ConcaveDecomposer._cast_ray_to_ring(
             polygon.exterior, vx, vy, dx, dy
         )
         if hit_pt is None:
             return [polygon]
 
-        # Small extension so the boolean difference cuts cleanly through
-        # the boundary (avoids degenerate tangent-only intersections).
+        # Extend past the endpoints so the boolean difference cuts
+        # cleanly through the boundary (avoids tangent-only results).
         ext = 0.5
         p1 = Point(vx - ext * dx, vy - ext * dy)
         p2 = Point(hit_pt.x + ext * dx, hit_pt.y + ext * dy)
@@ -388,18 +339,11 @@ class ConcaveDecomposer:
             return [result]
         return [polygon]
 
-    # ------------------------------------------------------------------ #
-    #                         Orchestrator                                #
-    # ------------------------------------------------------------------ #
-
     @staticmethod
     def _connect_holes_into_exterior(polygon: Polygon, heading_rad: float,
                             max_iter: int = 100,
                             channel_width: float = 1.0) -> Polygon | list[Polygon]:
-        """
-        Iteratively connect all holes to the exterior boundary.
-        Returns a Polygon (no holes) or list[Polygon] if the channel split it.
-        """
+        """Absorb every hole into the exterior; may split the polygon."""
         for _ in range(max_iter):
             if not list(polygon.interiors):
                 return polygon
@@ -449,11 +393,12 @@ class ConcaveDecomposer:
                    depth: int = 0,
                    channel_width: float = 1.0,
                    min_swath: float = 0.0) -> list[Polygon]:
-        """
-        Recursive main function.
-        Verifies if the polygon has concavities 'Type 2' that obstruct the flight
-        at the given angle. If there are any, cuts the polygon and processes the parts.
+        """Recursively decompose a polygon on type-2 concavities.
 
+        Holes are absorbed into the exterior first. Then, for each
+        remaining type-2 vertex, the polygon is split with a ray along
+        the heading and every resulting piece is re-entered. Pieces
+        without further type-2 concavities are returned as leaf cells.
         """
         if depth > 25:
             return [polygon]
@@ -461,7 +406,6 @@ class ConcaveDecomposer:
         polygon = orient(polygon, sign=1.0)
         heading_rad = np.radians(heading_angle_deg)
 
-        # --- Pre-step: connect ALL holes into exterior iteratively ---
         resolved = ConcaveDecomposer._connect_holes_into_exterior(polygon, heading_rad, channel_width=channel_width)
         if isinstance(resolved, list):
             result = []
@@ -471,18 +415,15 @@ class ConcaveDecomposer:
             return result
         polygon = resolved
 
-        # --- Exterior vertices ---
         coords = list(polygon.exterior.coords)
         if coords[0] == coords[-1]:
             coords = coords[:-1]
 
-        # Batch: find concave, then classify T2 with shared spatial index
         concave_indices = ConcaveDecomposer._find_concave_indices(coords)
         type2_indices = ConcaveDecomposer._classify_type2_batch(
             polygon, coords, concave_indices, heading_rad
         )
 
-        # Try cuts only on T2 vertices
         for i in type2_indices:
             sub_polygons = ConcaveDecomposer._split_polygon_at_vertex(
                 polygon, coords[i], heading_rad
@@ -493,7 +434,7 @@ class ConcaveDecomposer:
             if success:
                 return result
 
-        # --- No Type 2 found — polygon is ready ---
+        # No further type-2 concavities → this piece is a leaf cell.
         if not polygon.is_valid:
             polygon = make_valid(polygon)
             if polygon.geom_type == 'MultiPolygon':

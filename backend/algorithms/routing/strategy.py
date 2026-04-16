@@ -60,13 +60,10 @@ class GeneticStrategy(MissionPlannerStrategy):
 
 
 class GridSearchStrategy(MissionPlannerStrategy):
-    """Exhaustive integer-angle scan.
+    """Exhaustive integer-angle scan. Default strategy.
 
-    Replaces GeneticStrategy as the default: for a 1D search space of
-    180 integer angles, brute force is faster, deterministic, and
-    optimal by construction. Fitness = total flight distance (spray +
-    ferry + deadhead), the same objective the GA approximates but
-    without selection/crossover overhead.
+    Brute force over 180 integer angles: faster and optimal by
+    construction for this 1D search space.
     """
 
     def __init__(self, angle_step: int = 1):

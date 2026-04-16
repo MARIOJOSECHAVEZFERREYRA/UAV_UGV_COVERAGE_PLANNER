@@ -1,15 +1,7 @@
 """
 Modulo de planificacion tactica de rendezvous UAV-UGV.
 
-El RendezvousPlanner NO forma parte del cromosoma del GA.
-Se invoca durante la evaluacion del fitness como consecuencia
-de la logica de servicio, dados el estado actual del UAV y del UGV.
 
-Arquitectura de co-optimizacion implicita:
-  - Nivel estrategico: el GA decide angulos y orden de celdas.
-  - Nivel tactico (este modulo): dado el estado del sistema,
-    selecciona el mejor punto de encuentro factible sobre la
-    polyline fija del UGV.
 """
 
 import math
@@ -56,6 +48,10 @@ class RendezvousPlanner:
         self.total_length = self._compute_polyline_length()
         # Candidatos precalculados para evitar recomputar en cada llamada al fitness
         self._candidates = self._discretize_polyline(self.candidate_spacing)
+
+    def initial_point(self):
+        """Primer punto de la polyline del UGV."""
+        return self.ugv_polyline[0]
 
     # ------------------------------------------------------------------
     # GEOMETRIA DE LA POLYLINE
@@ -274,49 +270,31 @@ class RendezvousPlanner:
         uav_pos = (float(uav_pos[0]), float(uav_pos[1]))
 
         best = None
-        best_cost = float('inf')
+        best_d = float('inf')
 
         for candidate in self._candidates:
+            cand_point = candidate['point']
             d_along = candidate['distance_along']
 
-            # Filtro monotono: solo candidatos por delante del UGV
-            if d_along < ugv_distance_along - 1e-3:
-                continue
-
-            cand_point = candidate['point']
-
-            # Distancia euclidea del UAV al candidato
             d_uav = math.hypot(
                 cand_point[0] - uav_pos[0],
                 cand_point[1] - uav_pos[1],
             )
 
-            # Verificar factibilidad energetica antes de calcular tiempos
+            # Solo factibilidad energetica, sin filtro monotono
             energy_to_point = transit_energy_fn(d_uav)
             if energy_to_point > uav_energy_rem - e_reserve:
                 continue
 
-            # Tiempos de llegada
-            flight_time_uav = d_uav / v_uav
-            t_uav_arrival = t_current + flight_time_uav
+            if d_uav < best_d:
+                best_d = d_uav
+                flight_time_uav = d_uav / v_uav
+                t_uav_arrival = t_current + flight_time_uav
+                d_ugv = abs(d_along - ugv_distance_along)
+                travel_time_ugv = d_ugv / self.v_ugv
+                t_ugv_arrival = t_current + travel_time_ugv
+                t_wait_uav = max(0.0, t_ugv_arrival - t_uav_arrival)
 
-            # Distancia que el UGV debe avanzar (siempre >= 0 por el filtro de arriba)
-            d_ugv = max(0.0, d_along - ugv_distance_along)
-            travel_time_ugv = d_ugv / self.v_ugv
-            t_ugv_arrival = t_current + travel_time_ugv
-
-            # Espera del UAV: solo si llega antes que el UGV
-            t_wait_uav = max(0.0, t_ugv_arrival - t_uav_arrival)
-
-            # Funcion de costo homogenea en segundos equivalentes
-            cost = (
-                self.alpha * t_wait_uav
-                + self.beta * (d_uav / v_uav)
-                + self.gamma * (d_ugv / self.v_ugv)
-            )
-
-            if cost < best_cost:
-                best_cost = cost
                 best = {
                     'feasible': True,
                     'point': cand_point,
@@ -328,7 +306,7 @@ class RendezvousPlanner:
                     't_uav_arrival': t_uav_arrival,
                     't_ugv_arrival': t_ugv_arrival,
                     't_wait_uav': t_wait_uav,
-                    'cost': cost,
+                    'cost': d_uav,
                 }
 
         if best is None:
@@ -381,7 +359,6 @@ class RendezvousPlanner:
         v_uav = float(segmenter.drone.speed_max_ms)
 
         ugv_distance_along = 0.0
-        ugv_last_update_time = 0.0
         energy_remaining = usable_energy
         liquid_remaining = segmenter.tank_capacity
         t = 0.0
@@ -389,8 +366,17 @@ class RendezvousPlanner:
         cycles = []
         current_cycle_segments = []
 
+        base_point = tuple(self.ugv_polyline[0])
         first_path = route_segments[0].get('path', [])
-        uav_pos = segmenter._xy(first_path[0][:2]) if first_path else (0.0, 0.0)
+        uav_pos = segmenter._xy(first_path[0][:2]) if first_path else base_point
+
+        # Opening deadhead: base (ugv_polyline[0]) → first work point
+        dh_open_path, d_open = assembler.find_connection(base_point, uav_pos)
+        if d_open > 1e-3:
+            dh_open = segmenter._path_to_segments(dh_open_path, 'deadhead', False)
+            current_cycle_segments.extend(dh_open)
+            energy_remaining -= energy_model.energy_transit(d_open, liquid_remaining)
+            t += energy_model.time_transit(d_open)
 
         i = 0
         while i < len(route_segments):
@@ -410,11 +396,6 @@ class RendezvousPlanner:
             if dist < 1e-9:
                 i += 1
                 continue
-
-            # Advance UGV to current time
-            ugv_state = self.advance_ugv_to_time(ugv_distance_along, ugv_last_update_time, t)
-            ugv_distance_along = ugv_state['distance_along']
-            ugv_last_update_time = ugv_state['last_update_time']
 
             liq_step = segmenter._segment_liquid_use(seg_type, dist)
             energy_step = segmenter._segment_energy(seg_type, dist, liquid_remaining)
@@ -449,10 +430,6 @@ class RendezvousPlanner:
 
             # --- Service needed before this segment ---
             resume_pos = uav_pos
-
-            ugv_state = self.advance_ugv_to_time(ugv_distance_along, ugv_last_update_time, t)
-            ugv_distance_along = ugv_state['distance_along']
-            ugv_last_update_time = ugv_state['last_update_time']
 
             rv = self.find_best_rendezvous(
                 uav_pos=uav_pos,
@@ -498,7 +475,6 @@ class RendezvousPlanner:
             t = meet_time + self.t_service
 
             ugv_distance_along = rv['distance_along']
-            ugv_last_update_time = t
 
             energy_remaining = usable_energy
             liquid_remaining = segmenter.tank_capacity
@@ -516,6 +492,27 @@ class RendezvousPlanner:
             # Do NOT increment i: retry same segment with fresh resources
 
         if current_cycle_segments:
+            # Closing deadhead: last work point → final RV on UGV polyline
+            rv_final = self.find_best_rendezvous(
+                uav_pos=uav_pos,
+                uav_energy_rem=energy_remaining,
+                ugv_distance_along=ugv_distance_along,
+                t_current=t,
+                v_uav=v_uav,
+                transit_energy_fn=_transit_fn(energy_model, liquid_remaining),
+                e_reserve=0.0,  # final landing, no subsequent flight
+            )
+
+            if rv_final['feasible']:
+                rv_point = rv_final['point']
+                dh_close_path, _ = assembler.find_connection(uav_pos, rv_point)
+                dh_close = segmenter._path_to_segments(
+                    dh_close_path, 'deadhead', False)
+                current_cycle_segments.extend(dh_close)
+                final_base = rv_point
+            else:
+                final_base = uav_pos
+
             cycle_path = segmenter.segments_to_path(current_cycle_segments)
             cycles.append({
                 "type": "work",
@@ -523,7 +520,7 @@ class RendezvousPlanner:
                 "segments": current_cycle_segments,
                 "visual_groups": segmenter.compress_segments(current_cycle_segments),
                 "swath_width": segmenter.swath_width,
-                "base_point": uav_pos,
+                "base_point": final_base,
             })
 
         return cycles

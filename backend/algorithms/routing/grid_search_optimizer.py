@@ -1,20 +1,10 @@
-"""Brute-force grid search over the boustrophedon heading angle.
+"""Exhaustive integer-angle scan for the boustrophedon heading.
 
-For a fixed polygon + swath the fitness landscape in the angle dimension
-is tiny (180 integer values) and the GA that used to drive this step was
-ceremony: it spent hundreds of generations converging to what a simple
-exhaustive scan finds in one pass. This optimizer evaluates every
-integer angle in [0, 180) with the full pipeline (decompose, sweep,
-assemble, deadhead estimation) and returns the one that minimizes total
-flight distance `L = spray_m + ferry_m + deadhead_m`.
-
-The best angle is re-assembled in 'full' sequencer mode so its ferries
-are obstacle-aware geodesic routes rather than the euclidean-fast
-approximation used during the scan.
-
-Backwards-compatible: the return dict matches SweepAngleOptimizer's
-shape so downstream callers (StrategyFactory, MissionPlanner) need no
-changes.
+Evaluates every angle in [0, 180) with the full pipeline (decompose,
+sweep, assemble, deadhead estimation), ranks them by mission time,
+and re-emits the winner with obstacle-aware geodesic ferries.
+Return dict matches SweepAngleOptimizer so downstream callers do not
+need to branch on strategy.
 """
 
 import math
@@ -36,12 +26,7 @@ def _build_obstacle_union(polygon: Polygon):
 
 
 class GridSearchOptimizer:
-    """Exhaustive angle scan optimizer.
-
-    Replaces the genetic algorithm with a deterministic 180-angle search.
-    Each angle is evaluated with the full CPP pipeline and the minimum
-    total flight distance wins.
-    """
+    """Deterministic 180-angle scan. Winner minimizes mission time."""
 
     def __init__(self, planner, angle_step: int = 1,
                  energy_model=None, rendezvous_planner=None, w_rv: float = 0.5,
@@ -53,16 +38,10 @@ class GridSearchOptimizer:
         self.energy_model = energy_model
         self.rendezvous_planner = rendezvous_planner
         self.w_rv = float(w_rv)
-        # Optional per-extra-cycle penalty added to mission_time. Default 0
-        # assumes hot-swap batteries + instant refill → cycles penalize
-        # naturally via their extra deadhead distance. Set > 0 if you
-        # want the optimizer to prefer fewer cycles beyond that natural
-        # bias (units are seconds but the value is a tuning weight, not
-        # a physical measurement).
+        # Seconds added per extra cycle. Default 0 assumes hot-swap
+        # batteries; cycles already pay their deadhead cost in distance.
         self.cycle_penalty_s = float(cycle_penalty_s)
 
-        # Mission mode flags mirroring SweepAngleOptimizer so the strategy
-        # layer does not need to branch differently for grid vs genetic.
         self._rv_enabled = (
             energy_model is not None and rendezvous_planner is not None
         )
@@ -70,18 +49,12 @@ class GridSearchOptimizer:
             energy_model is not None and rendezvous_planner is None
         )
 
-    # ------------------------------------------------------------------
-    # Deadhead estimation (shared with SweepAngleOptimizer rationale)
-    # ------------------------------------------------------------------
-
     def _estimate_static_deadhead(self, route_segments, base_point):
-        """Euclidean walk mirroring MissionSegmenter.segment_path.
+        """Euclidean walk over the route returning (deadhead_m, n_cycles).
 
-        Returns (deadhead_total_m, n_cycles). n_cycles counts the number
-        of closed mission cycles, which equals `cycle_breaks + 1` — the
-        +1 is the always-present first cycle that opens with the entry
-        deadhead. n_cycles is needed by the mission-time fitness to
-        penalize refill/recharge overhead.
+        Mirrors the feasibility bookkeeping of MissionSegmenter so the
+        fitness sees the same cycle count that the downstream mission
+        planner will produce.
         """
         em = self.energy_model
         drone = em.drone
@@ -151,24 +124,13 @@ class GridSearchOptimizer:
         n_cycles = cycle_breaks + 1 if route_segments else 0
         return deadhead_total, n_cycles
 
-    # ------------------------------------------------------------------
-    # Mission-time fitness
-    # ------------------------------------------------------------------
-
     def _compute_mission_time(self, spray_m, ferry_m, deadhead_m, n_cycles, n_turns=0):
-        """Convert distance + turn count to total mission time in seconds.
+        """Return (mission_time_s, flight_time_s).
 
-        Flight time pondera cada segmento por su velocidad real:
-        sprays a cruise speed, ferries/deadheads a max transit speed.
-        Añade un costo fijo por cada turn entre sweep rows (tomado de
-        `drone.turn_duration_s`, default 10 s) porque el drone decelera,
-        gira 180° y vuelve a acelerar — ese tiempo no está en la
-        distancia pura. El overhead por ciclos extras se aplica solo si
-        el caller pasó `cycle_penalty_s > 0`; default 0 asume hot-swap
-        battery + refill instantáneo.
-
-        Cuando no hay energy_model (tests unitarios), usa valores
-        default para mantener el fitness monótono con la distancia.
+        Weighs each segment by its real speed: sprays at cruise,
+        ferries/deadheads at max transit. Adds ``drone.turn_duration_s``
+        per row turn (decelerate, 180°, accelerate). ``cycle_penalty_s``
+        is added only when the caller set it > 0.
         """
         if self.energy_model is not None:
             drone = self.energy_model.drone
@@ -192,10 +154,6 @@ class GridSearchOptimizer:
         cycle_penalty = self.cycle_penalty_s * max(n_cycles - 1, 0)
         mission_time_s = flight_time_s + cycle_penalty
         return mission_time_s, flight_time_s
-
-    # ------------------------------------------------------------------
-    # Single-angle evaluation
-    # ------------------------------------------------------------------
 
     def _evaluate_angle(self, angle_deg, polygon, target_area_S,
                         obstacle_union, base_point):
@@ -239,8 +197,7 @@ class GridSearchOptimizer:
         if not all_sweep_segments:
             return None
 
-        # Fast sequencer mode for scan — winner gets re-assembled with 'full'
-        # mode at the end of optimize().
+        # Fast sequencer: the winner is re-assembled with 'full' later.
         assembler = PathAssembler(
             sub_polygons, original_polygon=polygon,
             sequencer_mode='fast', base_point=base_point,
@@ -252,9 +209,10 @@ class GridSearchOptimizer:
 
         ferry_m = float(route_distances.get('ferry_m', 0.0))
 
-        # Deadhead: base→first + last→base + intermediate cycles
+        # Deadhead: entry + exit legs, plus mid-mission returns when
+        # the segmenter will break the route into several cycles.
         deadhead_m = 0.0
-        n_cycles = 1  # always at least 1 cycle if we have any route
+        n_cycles = 1
         if base_point is not None and route_segments:
             bp = (float(base_point[0]), float(base_point[1]))
             _, d_entry = assembler.find_connection(bp, route_segments[0]['path'][0])
@@ -264,16 +222,13 @@ class GridSearchOptimizer:
                 intermediate, n_cycles = self._estimate_static_deadhead(route_segments, bp)
                 deadhead_m += intermediate
 
-        # Fitness is total mission time — weights spray/ferry/deadhead by
-        # their real flight speeds, adds turn_duration_s per 180° turn,
-        # and applies an optional cycle_penalty per extra cycle.
         mission_time_s, flight_time_s = self._compute_mission_time(
             total_spray_distance, ferry_m, deadhead_m, n_cycles,
             n_turns=total_turn_count,
         )
         total_l = mission_time_s
 
-        # Optional rendezvous simulation (dynamic missions)
+        # Dynamic missions only: check the rendezvous simulation.
         rv_feasible = True
         rv_wait = 0.0
         rv_time = 0.0
@@ -319,10 +274,6 @@ class GridSearchOptimizer:
             'rv_time': rv_time,
             'rv_count': rv_count,
         }
-
-    # ------------------------------------------------------------------
-    # Public entry
-    # ------------------------------------------------------------------
 
     def optimize(self, polygon: Polygon, base_point=None) -> dict:
         target_area_S = polygon.area
@@ -389,7 +340,7 @@ class GridSearchOptimizer:
         return best
 
     def _reassemble_full(self, best, polygon, obstacle_union, base_point):
-        """Re-run assembly for the best angle with 'full' sequencer mode."""
+        """Re-emit the winning angle with obstacle-aware geodesic ferries."""
         sub_polygons = best['sub_polygons']
         all_sweep_segments = best['all_sweep_segments']
 
@@ -417,12 +368,19 @@ class GridSearchOptimizer:
                 dh += intermediate
             best['deadhead_m'] = dh
             best['n_cycles'] = n_cycles
-            turns = int(best.get('planner_metrics', {}).get('turn_count', 0))
-            mission_time_s, flight_time_s = self._compute_mission_time(
-                best['spray_m'], best['ferry_m'], dh, n_cycles, n_turns=turns,
-            )
-            best['l'] = mission_time_s
-            best['mission_time_s'] = mission_time_s
-            best['flight_time_s'] = flight_time_s
+
+        # Always recompute mission_time after updating ferry_m so the
+        # returned metrics stay consistent, even when base_point is None
+        # and the deadhead/cycle fields keep their fast-mode values.
+        turns = int(best.get('planner_metrics', {}).get('turn_count', 0))
+        mission_time_s, flight_time_s = self._compute_mission_time(
+            best['spray_m'], best['ferry_m'],
+            best.get('deadhead_m', 0.0),
+            best.get('n_cycles', 1),
+            n_turns=turns,
+        )
+        best['l'] = mission_time_s
+        best['mission_time_s'] = mission_time_s
+        best['flight_time_s'] = flight_time_s
 
         return best

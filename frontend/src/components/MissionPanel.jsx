@@ -280,23 +280,27 @@ function GroundSection({
 
       <Divider />
 
-      {/* Base / start point */}
-      <Btn
-        variant={isSettingBase ? 'active' : 'default'}
-        active={isSettingBase}
-        onClick={onToggleSetBasePoint}
-      >
-        {isSettingBase
-          ? 'Click on map…'
-          : basePoint
-            ? `Move ${isMobile ? 'UGV start' : 'base station'}`
-            : `Set ${isMobile ? 'UGV start' : 'base station'}`}
-      </Btn>
+      {/* Base station (static only — mobile derives start from polyline) */}
+      {!isMobile && (
+        <>
+          <Btn
+            variant={isSettingBase ? 'active' : 'default'}
+            active={isSettingBase}
+            onClick={onToggleSetBasePoint}
+          >
+            {isSettingBase
+              ? 'Click on map…'
+              : basePoint
+                ? 'Move base station'
+                : 'Set base station'}
+          </Btn>
 
-      {basePoint && (
-        <div style={{ fontSize: 11, color: C.muted }}>
-          {isMobile ? 'Start' : 'Base'}: ({basePoint[0].toFixed(1)}, {basePoint[1].toFixed(1)})
-        </div>
+          {basePoint && (
+            <div style={{ fontSize: 11, color: C.muted }}>
+              Base: ({basePoint[0].toFixed(1)}, {basePoint[1].toFixed(1)})
+            </div>
+          )}
+        </>
       )}
 
       {/* Mobile-only UGV route controls */}
@@ -639,7 +643,13 @@ export default function MissionPanel({
 
   async function handleCompute() {
     if (!activeField) return
-    if (!basePoint) {
+    const isMobileMode = missionType === 'mobile'
+    const hasUgvRouteOk = ugvRoute && ugvRoute.length >= 2
+    if (isMobileMode && !hasUgvRouteOk) {
+      setError('Please draw a UGV route before computing the mission.')
+      return
+    }
+    if (!isMobileMode && !basePoint) {
       setError('Please set a base point before computing the mission.')
       return
     }
@@ -670,13 +680,16 @@ export default function MissionPanel({
       const coords = ensureClosed(activeField.coordinates)
       const obs    = (activeField.obstacles ?? []).map(ensureClosed)
 
+      const isMobile    = missionType === 'mobile'
+      const hasUgvRoute = ugvRoute && ugvRoute.length >= 2
+
       const fieldPayload = {
         coordinates: coords,
         obstacles: obs,
-        base_point: basePoint,
+        base_point: isMobile && hasUgvRoute ? ugvRoute[0] : basePoint,
       }
 
-      if (missionType === 'mobile' && ugvRoute && ugvRoute.length >= 2) {
+      if (isMobile && hasUgvRoute) {
         fieldPayload.ugv_polyline  = ugvRoute
         fieldPayload.ugv_speed     = Number(ugvSpeed)
         fieldPayload.ugv_t_service = Number(ugvTService)
@@ -750,8 +763,8 @@ export default function MissionPanel({
   const hasBasePoint  = !!basePoint
   const needsUgvRoute = missionType === 'mobile'
   const hasUgvRoute   = ugvRoute && ugvRoute.length >= 2
-  const canCompute    = hasField && hasBasePoint && !loading && mode === MODE.NONE
-    && !(needsUgvRoute && !hasUgvRoute)
+  const groundReady   = needsUgvRoute ? hasUgvRoute : hasBasePoint
+  const canCompute    = hasField && groundReady && !loading && mode === MODE.NONE
 
   return (
     <div style={s.panel}>

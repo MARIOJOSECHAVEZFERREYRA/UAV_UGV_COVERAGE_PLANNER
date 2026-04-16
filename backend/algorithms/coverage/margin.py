@@ -2,23 +2,17 @@ from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
 class MarginReducer:
-    """
-    Shrinks the workable area inward from field edges and expands obstacles outward
-    to maintain h-meter clearance on all sides.
-    """
+    """Inset the field and inflate obstacles to keep h-meter clearance."""
 
     @staticmethod
     def _largest_polygon(geom):
-        """Extract the largest polygon from a possibly Multi geometry."""
         if geom.geom_type == 'MultiPolygon':
             return max(geom.geoms, key=lambda p: p.area)
         return geom
 
     @staticmethod
     def shrink_exterior(polygon: Polygon, margin_h: float) -> Polygon:
-        """
-        Shrink the field's outer boundary inward by h meters.
-        """
+        """Inset the outer boundary by `margin_h` meters."""
         exterior_only = Polygon(polygon.exterior.coords)
         shrunken = exterior_only.buffer(-margin_h, join_style=2)
 
@@ -29,11 +23,7 @@ class MarginReducer:
 
     @staticmethod
     def expand_obstacles(polygon: Polygon, margin_h: float) -> list[Polygon]:
-        """
-        Expand each obstacle (hole) outward by h meters.
-
-        :return: List of expanded obstacle polygons.
-        """
+        """Inflate every hole by `margin_h` meters."""
         expanded = []
         for interior in polygon.interiors:
             hole_poly = Polygon(interior.coords)
@@ -49,9 +39,10 @@ class MarginReducer:
     def _merge_nearby_obstacles(
         obstacles: list[Polygon], margin_h: float
     ) -> list[Polygon]:
-        """
-        Merge obstacles whose gap is < margin_h (drone can't fit between them).
-        Uses inflate/union/deflate: buffer by h/2 so gaps < h touch, union, unbuffer.
+        """Merge obstacles separated by less than `margin_h` (no-fit gap).
+
+        Inflates by h/2, unions, then deflates so pairs closer than h
+        collapse into a single obstacle.
         """
         if not obstacles:
             return []
@@ -67,13 +58,7 @@ class MarginReducer:
 
     @staticmethod
     def shrink(polygon: Polygon, margin_h: float) -> Polygon:
-        """
-        Orchestrates the full margin reduction:
-        1. Shrink exterior inward by h
-        2. Expand obstacles outward by h
-        3. Merge obstacles whose gap < h (drone can't fit between)
-        4. Subtract all obstacles from exterior (handles overlaps, holes, and merging with boundary)
-        """
+        """Full margin reduction: inset exterior, inflate + merge holes, subtract."""
         shrunken_ext = MarginReducer.shrink_exterior(polygon, margin_h)
 
         if shrunken_ext.is_empty:
@@ -86,10 +71,6 @@ class MarginReducer:
 
         merged_obs = MarginReducer._merge_nearby_obstacles(expanded_obs, margin_h)
 
-        # Subtract all obstacles from exterior.
-        # difference() naturally handles all cases:
-        # - Fully inside → creates a hole
-        # - Overlapping boundary → cuts the exterior
         result = shrunken_ext
         for obs in merged_obs:
             result = result.difference(obs)

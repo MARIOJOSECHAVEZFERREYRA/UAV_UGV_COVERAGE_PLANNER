@@ -1,9 +1,8 @@
-"""
-GA-based sweep angle optimizer for coverage path planning.
+"""GA-based sweep angle optimizer (Li et al. 2023, sec. 2.5).
 
-Finds the optimal boustrophedon heading angle for a given polygon using a
-genetic algorithm (Li et al. 2023, Aerospace 10, 755 — Section 2.5).
-
+Legacy search strategy kept alongside GridSearchOptimizer. Shares the
+same fitness (mission time) and the same return shape so the strategy
+layer can swap implementations without other changes.
 """
 
 import math
@@ -19,16 +18,14 @@ from ..simulation.mission_simulator import simulate_mission_with_rendezvous
 
 
 def build_obstacle_union(polygon: Polygon):
-    """Return a unary union of all interior holes, or None if there are none."""
+    """Union all interior holes, or None if the polygon has none."""
     if polygon.interiors:
         return unary_union([Polygon(h.coords) for h in polygon.interiors])
     return None
 
 
 class SweepAngleOptimizer:
-    """
-    GA-based optimizer that finds the best boustrophedon sweep angle for a polygon.
-    """
+    """Genetic search for the best boustrophedon heading angle."""
 
     def __init__(self, planner, pop_size=200, generations=300, crossover_rate=0.4,
                  mutation_rate=0.05, mutation_range=15, min_diversity=20,
@@ -46,25 +43,20 @@ class SweepAngleOptimizer:
         self.energy_model = energy_model
         self.rendezvous_planner = rendezvous_planner
         self.w_rv = float(w_rv)
-        # Tuning weight for the per-extra-cycle penalty added to
-        # mission_time. Default 0 = hot-swap assumption, cycles
-        # penalized only via their deadhead distance. See
-        # GridSearchOptimizer for the same parameter and rationale.
+        # Seconds added per extra cycle (hot-swap assumption when 0).
         self.cycle_penalty_s = float(cycle_penalty_s)
-        # _rv_enabled: dynamic mode — co-simulate rendezvous during fitness evaluation.
-        # _static_deadhead_enabled: static mode — estimate intermediate deadhead costs
-        #   so the GA can co-optimize sweep angle with deadhead distance.
-        # Both require energy_model; dynamic additionally requires rendezvous_planner.
+        # Dynamic mode co-simulates rendezvous; static mode estimates
+        # intermediate deadhead so the GA can co-optimize angle vs
+        # deadhead distance. Both require energy_model; dynamic also
+        # needs a rendezvous_planner.
         self._rv_enabled = energy_model is not None and rendezvous_planner is not None
         self._static_deadhead_enabled = energy_model is not None and rendezvous_planner is None
 
     def _estimate_static_deadhead(self, route_segments, base_point):
-        """Euclidean walk mirroring MissionSegmenter.segment_path.
+        """Euclidean walk returning (deadhead_m, n_cycles).
 
-        Returns (deadhead_total_m, n_cycles) so the caller can use the
-        cycle count for mission-time fitness (refill + recharge
-        penalty). Distances remain euclidean; this is a fitness-only
-        estimate, the real geodesic path is produced downstream.
+        Mirrors the feasibility bookkeeping in MissionSegmenter so the
+        GA fitness sees the same cycle count as the real segmenter.
         """
         em = self.energy_model
         drone = em.drone
@@ -77,9 +69,8 @@ class SweepAngleOptimizer:
         cycle_breaks = 0
         uav_x, uav_y = bx, by
 
-        # Deduct entry transit cost so resource tracking is consistent with
-        # MissionSegmenter, which subtracts the base → first-point leg before
-        # starting the feasibility loop.
+        # Mirror MissionSegmenter: deduct the base→first-point entry
+        # leg before starting the feasibility loop.
         if route_segments:
             first_path = route_segments[0].get('path', [])
             if first_path:
@@ -118,18 +109,17 @@ class SweepAngleOptimizer:
                 uav_x, uav_y = p2x, p2y
                 cycle_empty = False
             else:
-                # Cycle break before p1: fly to base and back
+                # Infeasible: close the cycle (return to base) and open
+                # a new one by flying back out to the current segment.
                 d_back = math.hypot(uav_x - bx, uav_y - by)
                 d_fwd = math.hypot(p1x - bx, p1y - by)
                 deadhead_total += d_back + d_fwd
                 cycle_breaks += 1
 
-                # Reset resources and deduct entry cost for the new cycle
                 e_rem = em.usable_energy_wh()
                 q_rem = float(drone.mass_tank_full_kg)
                 e_rem = max(0.0, e_rem - em.energy_transit(d_fwd, q_rem))
 
-                # Recompute step with fresh q_rem before executing
                 if seg_type == 'sweep':
                     e_step = em.energy_straight(dist, q_rem)
                     q_step = em.reagent_consumed(dist)
@@ -146,14 +136,7 @@ class SweepAngleOptimizer:
         return deadhead_total, n_cycles
 
     def _compute_mission_time(self, spray_m, ferry_m, deadhead_m, n_cycles, n_turns=0):
-        """Total mission time in seconds — same formula as GridSearchOptimizer.
-
-        Flight time pondera cada tipo de segmento por su velocidad real
-        y añade `drone.turn_duration_s` por cada turn entre sweep rows.
-        Penalty por cycles extras = `cycle_penalty_s * (n_cycles-1)`;
-        default 0 asume hot-swap battery → cycles penalizados solo por
-        su deadhead extra.
-        """
+        """Return (mission_time_s, flight_time_s). Same formula as GridSearch."""
         if self.energy_model is not None:
             drone = self.energy_model.drone
             v_cruise = float(getattr(drone, 'speed_cruise_ms', 5.0))
@@ -179,10 +162,7 @@ class SweepAngleOptimizer:
 
     def _evaluate_angle(self, angle_deg: int, polygon: Polygon, target_area_S: float, obstacle_union=None, base_point=None,
     ) -> dict:
-        """
-        Run the full CPP pipeline for a candidate heading angle and return
-        route-aware metrics.
-        """
+        """Run the full pipeline for one candidate angle and return metrics."""
         sub_polygons = ConcaveDecomposer.decompose(polygon, angle_deg,
                                                     channel_width=self.planner.spray_width,
                                                     min_swath=self.planner.spray_width)
@@ -209,8 +189,8 @@ class SweepAngleOptimizer:
             metrics = planner_result.get("metrics", {})
 
             if sweep_segments:
-                # Tag with cell_id so SweepSequencer can keep cell sweeps
-                # contiguous, producing topologically coherent cycles.
+                # Tag with cell_id so the sequencer keeps each cell's
+                # sweeps contiguous.
                 for s in sweep_segments:
                     s['cell_id'] = cell_id
                 all_sweep_segments.extend(sweep_segments)
@@ -219,11 +199,8 @@ class SweepAngleOptimizer:
             total_s_prime += float(metrics.get("coverage_area_m2", 0.0))
             total_turn_count += int(metrics.get("turn_count", 0))
 
-        # Fast sequencer: the GA hot path runs hundreds of evaluations; full
-        # geodesic sweep ordering would be wasteful here. The winning angle
-        # is re-assembled in 'full' mode at the end of optimize(). The
-        # base_point anchors the tour so downstream cycles end up locally
-        # coherent instead of jumping across the field.
+        # Fast sequencer in the GA hot path; the winning angle is
+        # re-assembled with 'full' geodesic ferries at the end.
         assembler = PathAssembler(
             sub_polygons,
             original_polygon=polygon,
@@ -240,9 +217,8 @@ class SweepAngleOptimizer:
         deadhead_m = 0.0
         n_cycles = 1
 
-        # Deadhead: base→first + last→base + intermediate per-cycle.
-        # base_point is outside the polygon; the assembler handles that
-        # via its geodesic solver.
+        # Deadhead: entry + exit legs, plus mid-mission returns from
+        # the static-deadhead walk when enabled.
         if base_point is not None and route_segments:
             base_pt = (float(base_point[0]), float(base_point[1]))
             _, d_entry = assembler.find_connection(base_pt, route_segments[0]["path"][0])
@@ -255,17 +231,13 @@ class SweepAngleOptimizer:
                 )
                 deadhead_m += intermediate
 
-        # Fitness = total mission time (seconds). Weights each segment
-        # by its real flight speed, adds turn_duration_s per turn, and
-        # applies an optional cycle penalty. See _compute_mission_time
-        # docstring for details.
         mission_time_s, flight_time_s = self._compute_mission_time(
             total_spray_distance, ferry_m, deadhead_m, n_cycles,
             n_turns=total_turn_count,
         )
         total_l = mission_time_s
 
-        # Simulacion de mision con rendezvous (solo si hay drone + UGV configurados)
+        # Dynamic missions only: simulate rendezvous to check feasibility.
         rv_feasible = True
         rv_wait = 0.0
         rv_time = 0.0
@@ -318,9 +290,8 @@ class SweepAngleOptimizer:
         Fitness function:
             f = ( l_norm + |S' - S| / S + w_rv * rv_penalty_norm )^{-1}
 
-        El termino rv_penalty_norm penaliza el tiempo de espera del UAV,
-        normalizado de la misma forma que l_norm. w_rv=0 reproduce el
-        comportamiento original sin rendezvous.
+        ``rv_penalty_norm`` penalizes UAV wait time, normalized the
+        same way as ``l_norm``. Setting ``w_rv=0`` disables the term.
         """
         if target_area_S <= 0:
             return 1e-10
@@ -335,17 +306,14 @@ class SweepAngleOptimizer:
 
     @staticmethod
     def _tournament_selection(population: list[int], fitness_values: list[float], k: int = 3) -> int:
-        """Tournament selection: pick k random individuals, return the best."""
+        """Pick k random individuals and return the fittest."""
         indices = random.sample(range(len(population)), k)
         best = max(indices, key=lambda i: fitness_values[i])
         return population[best]
 
     @staticmethod
     def _blend_crossover(p1: int, p2: int):
-        """
-        Blend crossover respecting the circular [0, 180) topology.
-        Uses the shortest arc between parents so children stay near both parents.
-        """
+        """Blend crossover on the circular [0, 180) angle space."""
         diff = (p2 - p1 + 90) % 180 - 90
         alpha = random.random()
         offset = round(alpha * diff)
@@ -354,7 +322,7 @@ class SweepAngleOptimizer:
         return c1, c2
 
     def _mutate(self, angle: int) -> int:
-        """Uniform mutation: perturb angle by a random offset."""
+        """Perturb an angle by a bounded random offset."""
         if random.random() < self.mutation_rate:
             delta = random.randint(-self.mutation_range, self.mutation_range)
             return (angle + delta) % 180
@@ -362,9 +330,7 @@ class SweepAngleOptimizer:
 
     def _evaluate_population(self, population: list[int], polygon: Polygon, target_area_S: float, cache: dict, obstacle_union=None, base_point=None,
     ):
-        """
-        Evaluate all individuals using a cache keyed by integer angle.
-        """
+        """Evaluate every individual; cache is keyed by integer angle."""
         raw_metrics = []
 
         for angle in population:
@@ -386,8 +352,8 @@ class SweepAngleOptimizer:
         l_norms = all_l / l2_norm
 
         if self._rv_enabled:
-            # Normalizar tiempos de espera del UAV igual que se normaliza l
-            # Las soluciones infactibles reciben un valor muy alto antes de normalizar
+            # Normalize UAV wait time the same way as l; infeasible
+            # solutions get a huge pre-normalization value so they sink.
             rv_waits = []
             for m in raw_metrics:
                 if m.get('rv_feasible', True):
@@ -403,7 +369,6 @@ class SweepAngleOptimizer:
             fitness_values = []
             for i in range(len(raw_metrics)):
                 if not raw_metrics[i].get('rv_feasible', True):
-                    # Solucion infactible: fitness minimo para que el GA la descarte
                     fitness_values.append(1e-10)
                 else:
                     f = self._compute_fitness(
@@ -423,9 +388,7 @@ class SweepAngleOptimizer:
         return raw_metrics, fitness_values, all_l
 
     def optimize(self, polygon: Polygon, base_point=None) -> dict:
-        """
-        Execute the GA.
-        """
+        """Run the GA and return the best solution dict."""
         target_area_S = polygon.area
         eval_cache = {}
 
@@ -473,7 +436,7 @@ class SweepAngleOptimizer:
                         "combined_path": m.get("combined_path", []),
                         "planner_metrics": m.get("planner_metrics", {}),
                         "route_distances": m.get("route_distances", {}),
-                        # Metricas de rendezvous (presentes solo cuando rv esta habilitado)
+                        # Rendezvous metrics (populated only in dynamic mode).
                         "rv_feasible": m.get("rv_feasible", True),
                         "rv_wait": m.get("rv_wait", 0.0),
                         "rv_time": m.get("rv_time", 0.0),
@@ -532,11 +495,10 @@ class SweepAngleOptimizer:
                     f"L={s['mean_l']:.0f}m"
                 )
 
-        # Re-seleccionar el mejor desde el cache completo usando normalizacion L2 fija.
-        # El problema con el tracking dentro del loop es que cada generacion normaliza
-        # por la norma L2 de su propia poblacion, haciendo los fitness entre generaciones
-        # incomparables. Aqui se normaliza por la norma L2 de TODAS las soluciones
-        # evaluadas a lo largo de toda la ejecucion del GA, que es un denominador fijo.
+        # Re-select the global best from the cache using a FIXED L2
+        # norm over every solution seen in the run. Per-generation
+        # normalization makes fitness values across generations
+        # incomparable; this pass fixes that with a single denominator.
         all_cached = list(eval_cache.values())
 
         if not all_cached:
@@ -577,9 +539,8 @@ class SweepAngleOptimizer:
             if f > best_abs_fitness:
                 best_abs_fitness = f
                 extra_cov = abs(m["s_prime"] - target_area_S) / target_area_S * 100.0
-                # Preserve all keys from the cache entry (including the
-                # mission-time fitness metadata: spray_m, ferry_m,
-                # deadhead_m, n_cycles, mission_time_s, flight_time_s).
+                # Preserve every cache-entry field (spray_m, ferry_m,
+                # deadhead_m, n_cycles, mission_time_s, ...).
                 best_solution = dict(m)
                 best_solution["fitness"] = f
                 best_solution["extra_coverage_pct"] = extra_cov
@@ -593,9 +554,7 @@ class SweepAngleOptimizer:
                 )
             raise ValueError("SweepAngleOptimizer failed to find a valid solution.")
 
-        # Re-assemble the winning angle with the full geodesic sequencer so
-        # the emitted route has the best possible ferry ordering. Only done
-        # once — trivial cost compared to the GA run.
+        # Re-emit the winner with obstacle-aware ferries (one-shot).
         best_solution = self._reassemble_full(
             best_solution, polygon, obstacle_union, base_point,
         )
@@ -616,13 +575,7 @@ class SweepAngleOptimizer:
         return best_solution
 
     def _reassemble_full(self, best_solution, polygon, obstacle_union, base_point):  # noqa: E501
-        """Re-run decomposition + assembly for the best angle in 'full' mode.
-
-        The GA uses a fast euclidean sequencer for speed. This method picks
-        the winning angle and re-emits route_segments with the geodesic
-        sequencer so the ferries chosen for the real mission reflect obstacle
-        avoidance, not just euclidean heuristics.
-        """
+        """Re-emit the winning angle with obstacle-aware geodesic ferries."""
         angle = int(best_solution["angle"])
         sub_polygons = ConcaveDecomposer.decompose(
             polygon, angle,
@@ -661,8 +614,8 @@ class SweepAngleOptimizer:
         best_solution["combined_path"] = assembly.get("combined_path", [])
         best_solution["route_distances"] = assembly.get("distances", {})
 
-        # Recompute mission time with the 'full' geodesic ferries so the
-        # final 'l' (mission_time_s) reflects the real emitted route.
+        # Recompute mission_time with the full-mode ferries so the
+        # returned 'l' matches the emitted route.
         spray_m = float(best_solution.get("spray_m", 0.0))
         ferry_m = float(assembly.get("distances", {}).get("ferry_m", 0.0))
         deadhead_m = 0.0

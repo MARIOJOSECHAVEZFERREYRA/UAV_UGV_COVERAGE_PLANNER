@@ -1,26 +1,16 @@
-"""Sweep ordering as a two-level chained TSP.
+"""Two-level sweep ordering.
 
-Sweeps come from the coverage decomposer grouped by cell: each convex
-cell already has its own spatially coherent boustrophedon sequence. The
-sequencer preserves that structure by treating each cell as an atomic
-unit — it picks the order of cells and whether each cell should be
-traversed forward or reversed, but never interleaves sweeps from
-different cells.
+Treats each decomposed cell as atomic: picks the order of cells and
+whether each is traversed forward or reversed, but never interleaves
+sweeps from different cells. This keeps the downstream mission cycles
+inside contiguous regions of the field.
 
-This is the key to topologically coherent mission cycles. The downstream
-MissionSegmenter slices the tour into cycles by energy/liquid budget;
-if the tour stays within one cell at a time, each cycle falls inside a
-contiguous region of the field instead of jumping between scattered
-corners.
+Modes:
+    'fast' — euclidean distance (optimizer hot path).
+    'full' — obstacle-aware geodesic via GeodesicSolver (final emit).
 
-Two modes:
-    'fast'  — euclidean distance; used in the GA hot path where each
-              evaluation must be cheap.
-    'full'  — geodesic distance via GeodesicSolver; used once on the
-              winning solution to emit visually correct ferries.
-
-If the input sweeps don't carry a 'cell_id' key the sequencer falls back
-to flat NN+2opt over individual sweeps (legacy behavior).
+Falls back to a flat NN+2opt over individual sweeps when sweeps lack a
+usable 'cell_id'.
 """
 
 import math
@@ -44,10 +34,8 @@ class SweepSequencer:
             (float(base_point[0]), float(base_point[1]))
             if base_point is not None else None
         )
-        # Optional cell-id → set(cell-ids) adjacency graph. When supplied,
-        # the cell-level NN walks this graph to guarantee that consecutive
-        # cells in the tour share a physical boundary — producing mission
-        # cycles that can never jump between disconnected regions.
+        # Optional adjacency graph (cell_id -> {cell_ids}). Consecutive
+        # cells in the tour must share a physical boundary when present.
         self._cell_adjacency = cell_adjacency
 
     # ------------------------------------------------------------------
@@ -70,11 +58,10 @@ class SweepSequencer:
     # ------------------------------------------------------------------
 
     def sequence(self, sweeps):
-        """Return a flat list of sweep dicts, reordered and possibly flipped.
+        """Return the sweeps reordered and possibly flipped.
 
-        If every sweep has a 'cell_id' key the sequencer operates at the
-        cell level (cells are atomic, internal boustrophedon order is
-        preserved). Otherwise it falls back to per-sweep NN+2opt.
+        Cell-aware path is used when every sweep carries a non-null
+        cell_id; otherwise falls back to flat NN+2opt.
         """
         if not sweeps:
             return []
@@ -84,7 +71,7 @@ class SweepSequencer:
         if len(cloned) <= 1:
             return cloned
 
-        has_all_ids = all('cell_id' in s for s in cloned)
+        has_all_ids = all(s.get('cell_id') is not None for s in cloned)
         if has_all_ids:
             cells, cell_ids = self._group_by_cell(cloned)
             if len(cells) >= 2:
@@ -95,20 +82,11 @@ class SweepSequencer:
         ordered = self._two_opt_flat(ordered)
         return ordered
 
-    # ------------------------------------------------------------------
-    # Cell grouping
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _group_by_cell(cloned_sweeps):
-        """Preserve input order within each cell while bucketing by cell_id.
-
-        Returns (cells, cell_ids) where cells[i] is the list of sweeps
-        belonging to cell with id cell_ids[i]. Cells are emitted in the
-        insertion order encountered in the input.
-        """
+        """Bucket sweeps by cell_id, preserving input order inside each bucket."""
         buckets = {}
-        order = []  # insertion order of cell_ids
+        order = []
         for sw in cloned_sweeps:
             cid = sw['cell_id']
             if cid not in buckets:
@@ -118,48 +96,28 @@ class SweepSequencer:
         cells = [buckets[cid] for cid in order]
         return cells, order
 
-    # ------------------------------------------------------------------
-    # Cell-level sequencing
-    # ------------------------------------------------------------------
-
     def _cell_endpoints(self, cell, reversed_state):
-        """Return the (start, end) points of a cell in a given state."""
+        """Entry and exit points of a cell in natural or reversed state."""
         if reversed_state:
-            # Traverse reversed: entry = last sweep's last point (which
-            # becomes the first point after flipping), exit = first
-            # sweep's first point (becomes its last).
-            start = cell[-1]['path'][-1]
-            end = cell[0]['path'][0]
-        else:
-            start = cell[0]['path'][0]
-            end = cell[-1]['path'][-1]
-        return start, end
+            return cell[-1]['path'][-1], cell[0]['path'][0]
+        return cell[0]['path'][0], cell[-1]['path'][-1]
 
     def _flatten_cell(self, cell, reversed_state):
-        """Emit a cell's sweeps in the chosen state, flipping as needed."""
+        """Clone a cell's sweeps, flipping each one when reversed."""
         if not reversed_state:
             return [self._clone(s) for s in cell]
-        out = []
-        for sw in reversed(cell):
-            out.append(self._flip_sweep(sw))
-        return out
+        return [self._flip_sweep(sw) for sw in reversed(cell)]
 
     def _sequence_cells(self, cells, cell_ids):
-        """Two-level sequencer: order cells, then emit flat sweeps.
+        """Order cells via base-anchored NN + 2-opt, then emit flat sweeps.
 
-        Phase 1: pick starting cell (nearest to base if available, else
-                 the cell that was first in the input).
-        Phase 2: greedy NN over remaining cells — at each step choose
-                 the cell+state whose entry point is closest to the
-                 current cursor. When a cell adjacency graph is provided,
-                 restrict candidates to cells that share a boundary with
-                 the current cell (topological constraint). Fall back to
-                 global nearest only when all adjacent cells are visited.
-        Phase 3: 2-opt over the cell sequence to refine.
+        When a cell adjacency graph is provided, NN prefers neighbors
+        of the current cell so the tour stays topologically connected;
+        it falls back to the global nearest only when no adjacent
+        candidate remains.
         """
         n = len(cells)
 
-        # Phase 1+2 — base-anchored NN over cells
         remaining = list(range(n))
         states = [False] * n  # reversed?
         order = []
@@ -176,9 +134,8 @@ class SweepSequencer:
             cur_cell_id = cell_ids[ordered_first]
 
         while remaining:
-            # If we have adjacency info, restrict candidates to cells that
-            # are physically adjacent to the current one. Otherwise, or if
-            # no adjacent candidate remains, fall back to all remaining.
+            # Prefer adjacent cells when adjacency info is available;
+            # otherwise consider all remaining.
             candidates = remaining
             if (self._cell_adjacency is not None
                     and cur_cell_id is not None):
@@ -211,20 +168,15 @@ class SweepSequencer:
             cursor = exit_pt
             cur_cell_id = cell_ids[best_i]
 
-        # Phase 3 — 2-opt refinement over the cell sequence
         order, states = self._two_opt_cells(cells, order, states, cell_ids)
 
-        # Emit flat sweep list
         flat = []
         for idx in order:
             flat.extend(self._flatten_cell(cells[idx], states[idx]))
         return flat
 
     def _count_non_adjacent(self, order, cell_ids):
-        """Number of consecutive cell pairs in `order` that are not adjacent.
-
-        Returns 0 when no adjacency graph is configured (unconstrained).
-        """
+        """Count consecutive cell pairs that break the adjacency graph."""
         if self._cell_adjacency is None:
             return 0
         n = len(order)
@@ -237,18 +189,13 @@ class SweepSequencer:
         return count
 
     def _two_opt_cells(self, cells, order, states, cell_ids):
-        """Reverse a sub-range [i..j] of the cell sequence if it lowers cost.
+        """Refine the cell order by reversing sub-ranges that lower cost.
 
-        Reversing a sub-range of cells:
-          - reverses the order of cells
-          - inverts the state of each cell in the sub-range (a cell
-            previously traversed natural is now reversed, and vice versa)
-        Tour cost includes base→first_cell entry and last_cell_exit→base
-        when a base_point is provided.
-
-        Adjacency-preserving: when a cell adjacency graph is provided, a
-        swap is rejected if it introduces new non-adjacent transitions.
-        This keeps the NN-produced topological walk intact.
+        Reversing [i..j] reverses the cell order and flips the state of
+        each cell in the range. Only internal edges are re-costed;
+        position 0 stays pinned so NN's base-anchored entry is never
+        displaced. When an adjacency graph is supplied, swaps that add
+        non-adjacent transitions are rejected.
         """
         n = len(order)
         if n < 3:
@@ -256,36 +203,17 @@ class SweepSequencer:
 
         baseline_non_adj = self._count_non_adjacent(order, cell_ids)
 
-        # Pin position 0 for the same reason as _two_opt_flat.
-
-        def entry(idx):
-            return self._cell_endpoints(cells[order[idx]], states[order[idx]])[0]
-
-        def exit_pt(idx):
-            return self._cell_endpoints(cells[order[idx]], states[order[idx]])[1]
-
-        def full_cost():
-            total = 0.0
-            if has_base:
-                total += self._dist(self._base, entry(0))
-            for k in range(n - 1):
-                total += self._dist(exit_pt(k), entry(k + 1))
-            if has_base:
-                total += self._dist(exit_pt(n - 1), self._base)
-            return total
-
         for _ in range(_MAX_2OPT_ITERS):
             improved = False
             for i in range(1, n - 1):
                 for j in range(i + 1, n):
-                    # Propose reversing order[i..j] and flipping each state.
                     new_order = order[:i] + list(reversed(order[i:j + 1])) + order[j + 1:]
                     new_states = list(states)
                     for k in range(i, j + 1):
                         new_states[new_order[k]] = not states[new_order[k]]
 
-                    # Evaluate only the two edges that change: left (before i)
-                    # and right (after j). All other edges are identical.
+                    # Only the two edges around the reversed range
+                    # change; all internal edges are identical.
                     def _entry_of(pos, seq_order, seq_states):
                         cell = cells[seq_order[pos]]
                         return self._cell_endpoints(cell, seq_states[seq_order[pos]])[0]
@@ -294,9 +222,6 @@ class SweepSequencer:
                         cell = cells[seq_order[pos]]
                         return self._cell_endpoints(cell, seq_states[seq_order[pos]])[1]
 
-                    # Virtual base edges intentionally excluded — see rationale
-                    # in _two_opt_flat. NN already anchors the tour at base.
-                    # Position 0 is pinned (loop starts at i=1), so i-1 is valid.
                     left_anchor = _exit_of(i - 1, order, states)
                     right_anchor = _entry_of(j + 1, order, states) if j + 1 < n else None
 
@@ -312,7 +237,7 @@ class SweepSequencer:
 
                     delta = (left_new + right_new) - (left_old + right_old)
                     if delta < -_POINT_TOL:
-                        # Adjacency guard: reject swaps that add jumps.
+                        # Reject swaps that add non-adjacent transitions.
                         new_non_adj = self._count_non_adjacent(new_order, cell_ids)
                         if new_non_adj > baseline_non_adj:
                             continue
@@ -328,9 +253,7 @@ class SweepSequencer:
 
         return order, states
 
-    # ------------------------------------------------------------------
-    # Legacy flat per-sweep NN+2opt (fallback when cell_id is missing)
-    # ------------------------------------------------------------------
+    # Flat NN+2opt fallback (used when sweeps lack a usable cell_id).
 
     def _nearest_neighbor_flat(self, sweeps):
         remaining = list(sweeps)
@@ -373,24 +296,17 @@ class SweepSequencer:
         return ordered
 
     def _two_opt_flat(self, ordered):
-        """Minimize total inter-sweep ferry distance.
+        """Refine sweep order by reversing sub-ranges that lower ferry cost.
 
-        Note: we deliberately DO NOT include the virtual base→first and
-        last→base edges in the delta calculation. Including them biases
-        2-opt toward "tucking" a base-close sweep at either end of the
-        tour, creating huge internal jumps (e.g. 328m) to save a few
-        metres of closing deadhead. NN's base-anchored start already
-        places the closest sweep at position 0; 2-opt refines internal
-        ordering without touching the virtual base edges.
+        The virtual base→first and last→base edges are excluded from
+        the delta so a base-close sweep at the tour ends cannot drag
+        other sweeps into long internal jumps. Position 0 stays pinned
+        (loop starts at i=1) to preserve the NN base anchor.
         """
         n = len(ordered)
         if n < 3:
             return ordered
 
-        # Pin position 0: the NN places the sweep closest to the base at
-        # position 0 on purpose. 2-opt must not displace this anchor by
-        # reversing any sub-range starting at 0, so the outer loop starts
-        # at i=1.
         for _ in range(_MAX_2OPT_ITERS):
             improved = False
             for i in range(1, n - 1):

@@ -1,9 +1,7 @@
-"""Shortest path in ℝ² with polygonal holes as obstacles.
+"""Shortest path in ℝ² \\ holes.
 
-Reduced visibility graph over hole vertices + A* with euclidean heuristic.
-The drone is not restricted to any polygon; the only obstacles are physical
-holes (interior rings). This is the sole authoritative path solver used by
-PathAssembler for both ferry connections and deadheads.
+Reduced visibility graph over hole vertices + A* with euclidean
+heuristic. Used by PathAssembler for both ferries and deadheads.
 """
 
 import heapq
@@ -15,7 +13,7 @@ from shapely.ops import unary_union
 from shapely.prepared import prep
 
 
-_COORD_QUANT = 1_000_000_000  # 9 decimals — dedup hole vertices robustly
+_COORD_QUANT = 1_000_000_000  # dedup vertices at 9 decimals
 _POINT_TOL = 1e-9
 
 
@@ -29,11 +27,11 @@ def _pts_equal(a, b, tol=1e-6):
 
 
 class GeodesicSolver:
-    """Shortest collision-free path between two points in ℝ² \\ holes.
+    """Shortest collision-free path between two points.
 
-    Construction cost: O(V²) visibility tests where V = number of hole
-    vertices (typically 0–30 for agricultural fields). Each query is
-    O(1) when the direct line is clear, or O(V² log V) A* otherwise.
+    Construction is O(V²) visibility tests (V = hole vertices, usually
+    small). Each query is O(1) when the direct line is clear, otherwise
+    A* on the visibility graph.
     """
 
     def __init__(self, holes=None):
@@ -47,10 +45,6 @@ class GeodesicSolver:
 
         self._vertices = self._extract_hole_vertices(cleaned)
         self._base_graph = self._build_visibility_graph(self._vertices)
-
-    # ------------------------------------------------------------------
-    # Construction
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _extract_hole_vertices(holes):
@@ -71,7 +65,7 @@ class GeodesicSolver:
         graph = defaultdict(dict)
         n = len(vertices)
         for i in range(n):
-            graph[vertices[i]]  # touch to ensure node exists
+            graph[vertices[i]]  # ensure node exists
             for j in range(i + 1, n):
                 a, b = vertices[i], vertices[j]
                 if self._is_visible(a, b):
@@ -80,17 +74,11 @@ class GeodesicSolver:
                     graph[b][a] = d
         return graph
 
-    # ------------------------------------------------------------------
-    # Visibility
-    # ------------------------------------------------------------------
-
     def _is_visible(self, p1, p2):
-        """True if the open segment p1-p2 does not cross any hole interior.
+        """True if the open segment p1-p2 never enters a hole interior.
 
-        Touching a hole vertex or running along a hole edge is allowed —
-        only segments whose interior passes through a hole are rejected.
-        Implementation: compute the intersection with the holes union and
-        check that it lies entirely on the boundary (no interior overlap).
+        Skimming a boundary or touching a vertex is allowed; only
+        crossings with interior overlap are rejected.
         """
         if self._holes_union is None:
             return True
@@ -105,27 +93,18 @@ class GeodesicSolver:
         if inter.is_empty:
             return True
 
-        # If every bit of the intersection lies on the hole boundary, the
-        # segment skims but never enters a hole. difference(boundary) returns
-        # only the parts strictly inside the hole interior — empty means safe.
+        # Interior overlap is empty iff the intersection is entirely
+        # on the hole boundary (safe skim, no crossing).
         interior_overlap = inter.difference(self._holes_union.boundary)
         return interior_overlap.is_empty
 
-    # ------------------------------------------------------------------
-    # Public query
-    # ------------------------------------------------------------------
-
     def shortest_path(self, start, end):
-        """Return (path, distance) from start to end avoiding holes.
+        """Return (path, distance) from start to end, avoiding holes.
 
-        path[0] == start and path[-1] == end exactly. distance is the
-        euclidean length of the resulting polyline.
-
-        Robustness: if either endpoint is numerically inside a hole
-        (which can happen when sweep endpoints land on clipped borders
-        with floating-point drift), snap it to the nearest point just
-        outside the hole and retry A*. As a last resort return the
-        direct euclidean line with a warning instead of raising.
+        Endpoints in the result are exactly the inputs. When an endpoint
+        lands numerically on or inside a hole (float drift from clipped
+        sweeps), it is snapped just outside and retried; last resort
+        returns the direct euclidean line with a warning.
         """
         start = (float(start[0]), float(start[1]))
         end = (float(end[0]), float(end[1]))
@@ -141,17 +120,16 @@ class GeodesicSolver:
         except RuntimeError:
             pass
 
-        # First retry: snap endpoints out of any containing hole.
+        # Retry with endpoints snapped just outside any containing hole.
         s_snap = self._snap_outside_holes(start)
         e_snap = self._snap_outside_holes(end)
         if s_snap != start or e_snap != end:
             try:
                 path, dist = self._astar(s_snap, e_snap)
-                # Do NOT replace the snapped first/last points with the
-                # originals — doing so creates a direct line from start
-                # to the A* path's second point that may cross a hole.
-                # Instead, INSERT the original endpoints as tiny
-                # connecting hops at each end of the snapped route.
+                # Insert the original endpoints as short hops at each
+                # end; replacing the snapped points would create a line
+                # from start to the A* path's second point that may
+                # cross a hole.
                 if path:
                     if tuple(start) != tuple(path[0]):
                         dist += math.hypot(
@@ -167,8 +145,7 @@ class GeodesicSolver:
             except RuntimeError:
                 pass
 
-        # Last resort: direct euclidean fallback (may cross a hole in
-        # degenerate cases). Better than crashing the full mission.
+        # Last resort: direct line with a warning instead of raising.
         import warnings
         warnings.warn(
             "GeodesicSolver: A* failed from {} to {}; "
@@ -177,31 +154,22 @@ class GeodesicSolver:
         )
         return [start, end], math.hypot(end[0] - start[0], end[1] - start[1])
 
-    # ------------------------------------------------------------------
-    # Endpoint snapping (numerical robustness)
-    # ------------------------------------------------------------------
-
     _SNAP_EPSILON = 1e-4
 
     def _snap_outside_holes(self, pt):
-        """Push `pt` just outside any hole that contains or touches it.
+        """Nudge `pt` just outside any hole that contains or touches it.
 
-        Uses shapely's nearest-point-on-boundary + a tiny outward nudge.
-        Points strictly inside a hole AND points lying exactly on a hole
-        boundary both need snapping, because A* visibility from a
-        boundary point toward hole vertices can fail when every ray
-        grazes the interior. Only points strictly outside (distance to
-        holes > epsilon) are left unchanged.
+        Points strictly outside (distance > epsilon) are kept as-is.
+        On-boundary points are snapped outward because visibility rays
+        from a boundary point can all graze the interior.
         """
         if self._holes_union is None:
             return pt
         from shapely.geometry import Point
         p = Point(pt)
-        # Points strictly outside have a positive distance to the holes.
         if p.distance(self._holes_union) > self._SNAP_EPSILON:
             return pt
 
-        # Project onto the boundary and then push outward by epsilon.
         boundary = self._holes_union.boundary
         from shapely.ops import nearest_points
         _, nearest = nearest_points(p, boundary)
@@ -211,33 +179,26 @@ class GeodesicSolver:
         norm = math.hypot(dx, dy)
 
         if norm < 1e-12:
-            # pt lies exactly on the boundary — we need an outward normal.
-            # Approximate it by trying 4 cardinal directions and picking
-            # the first that lands strictly outside all holes.
+            # pt lies exactly on the boundary; probe 8 cardinal
+            # directions for the first that lands strictly outside.
             for step_dx, step_dy in ((1, 0), (-1, 0), (0, 1), (0, -1),
                                      (1, 1), (-1, 1), (1, -1), (-1, -1)):
-                eps = self._SNAP_EPSILON * 10.0  # bigger nudge for degenerate case
+                eps = self._SNAP_EPSILON * 10.0
                 cand = (pt[0] + step_dx * eps, pt[1] + step_dy * eps)
                 if Point(cand).distance(self._holes_union) > self._SNAP_EPSILON:
                     return cand
-            # Fallback: give up with a best-effort nudge.
             return (pt[0] + self._SNAP_EPSILON, pt[1])
 
-        # Move from pt past the boundary point by an extra epsilon in
-        # the direction AWAY from the hole interior.
         ux = dx / norm
         uy = dy / norm
         return (nx + ux * self._SNAP_EPSILON, ny + uy * self._SNAP_EPSILON)
-
-    # ------------------------------------------------------------------
-    # A* ALGORITMH
-    # ------------------------------------------------------------------
 
     def _astar(self, start, end):
         def h(pt):
             return math.hypot(end[0] - pt[0], end[1] - pt[1])
 
-        # Build per-query adjacency: base graph + visibility from start/end.
+        # Adjacency is lazy: start/end get visibility-tested on demand
+        # against the base graph.
         neighbors_of = {}
 
         def neighbors(node):
@@ -259,7 +220,7 @@ class GeodesicSolver:
                         vis[v] = math.hypot(v[0] - end[0], v[1] - end[1])
                 neighbors_of[node] = vis
                 return vis
-            # Hole vertex: union of base neighbors plus visibility to end.
+            # Hole vertex: base neighbors + direct-to-end visibility.
             vis = dict(self._base_graph.get(node, {}))
             if self._is_visible(node, end):
                 vis[end] = math.hypot(end[0] - node[0], end[1] - node[1])
@@ -276,12 +237,10 @@ class GeodesicSolver:
             if cur in closed:
                 continue
             if cur == end:
-                # Reconstruct path
                 path = [end]
                 while path[-1] in came_from:
                     path.append(came_from[path[-1]])
                 path.reverse()
-                # Ensure exact endpoints
                 path[0] = start
                 path[-1] = end
                 return path, g_cur
@@ -297,7 +256,6 @@ class GeodesicSolver:
                     heapq.heappush(open_set, (tentative + h(nb), tentative, nb))
 
         raise RuntimeError(
-            "GeodesicSolver: no path found from {} to {}. "
-            "This should only happen if holes enclose the endpoint."
-            .format(start, end)
+            "GeodesicSolver: no path from {} to {} (endpoint "
+            "likely enclosed by holes).".format(start, end)
         )

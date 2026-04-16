@@ -1,39 +1,26 @@
-"""Assemble sweep segments into a connected mission route.
+"""Facade that sequences sweeps and stitches them with obstacle-aware ferries.
 
-Thin facade over GeodesicSolver (shortest path) and SweepSequencer
-(sweep ordering). Preserves the public contract of the previous
-cell-based implementation so callers (SweepAngleOptimizer, StrategyFactory,
-RendezvousPlanner, pipeline_visual) do not need to change.
-
-Navigation space is ℝ² minus the polygon's holes — the drone is free to
-fly over the margin strip and outside the field, only physical obstacles
-(interior rings) matter for path clearance.
+Composes a GeodesicSolver (shortest path in ℝ² \\ holes) with a
+SweepSequencer (cell-aware sweep ordering). Navigation ignores the field
+boundary — only interior rings (real obstacles) constrain paths.
 """
 
 from shapely.geometry import LineString, Polygon
-from shapely.ops import unary_union
 
 from .geodesic_solver import GeodesicSolver
 from .sweep_sequencer import SweepSequencer
 
 
 class PathAssembler:
-    """Facade: sequences sweeps and emits typed route segments with ferries.
-
-    Constructor preserves the previous signature for caller compatibility.
-    The sub_polygons argument is accepted (legacy shape used by the optimizer
-    and visualizer) but only consulted as a source of holes when
-    original_polygon is not provided.
-    """
+    """Sequence sweeps and interleave ferries to form the mission route."""
 
     def __init__(self, sub_polygons, original_polygon=None,
                  sequencer_mode='full', base_point=None):
         holes = self._extract_holes(sub_polygons, original_polygon)
         self._solver = GeodesicSolver(holes=holes)
 
-        # Precompute cell adjacency when we have multiple sub_polygons.
-        # The sequencer uses it to prefer topologically adjacent cells
-        # during NN, which keeps consecutive mission cycles contiguous.
+        # Adjacency lets the sequencer prefer topologically connected
+        # cells, keeping consecutive mission cycles contiguous.
         cell_adjacency = self._build_cell_adjacency(sub_polygons)
 
         self._sequencer = SweepSequencer(
@@ -43,17 +30,11 @@ class PathAssembler:
             cell_adjacency=cell_adjacency,
         )
 
-    # ------------------------------------------------------------------
-    # Cell adjacency
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _build_cell_adjacency(sub_polygons):
-        """Return a dict mapping cell index to the set of adjacent cell indices.
+        """Map cell index -> set of neighbors sharing a boundary segment.
 
-        Two cells are adjacent when their boundaries share a line segment
-        of positive length (not just a point). Returns None if sub_polygons
-        is not a list of multiple polygons.
+        Returns None for single-polygon or non-list input.
         """
         if not isinstance(sub_polygons, (list, tuple)):
             return None
@@ -78,19 +59,12 @@ class PathAssembler:
                     adj[j].add(i)
         return adj
 
-    # ------------------------------------------------------------------
-    # Hole extraction
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _extract_holes(sub_polygons, original_polygon):
-        """Return a list of Polygon objects representing physical obstacles.
+        """Return Polygon objects for every obstacle the drone must avoid.
 
-        Priority:
-          1. original_polygon.interiors (authoritative — these are the
-             safe_polygon holes set by MissionPlanner).
-          2. sub_polygons if it is a single Polygon with interiors.
-          3. Empty list — no obstacles.
+        Prefers original_polygon.interiors (authoritative), falls back
+        to sub_polygons interiors when it is a single Polygon.
         """
         source = None
         if original_polygon is not None:
@@ -110,31 +84,18 @@ class PathAssembler:
 
         return [Polygon(ring) for ring in interiors if len(ring.coords) >= 4]
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def find_connection(self, start, end):
-        """Shortest obstacle-aware path between two points.
+        """Obstacle-aware shortest path between two points.
 
-        Returns (path_waypoints, distance_meters). path[0] and path[-1] are
-        exactly the inputs. The path never crosses a hole interior.
+        Returns (path, distance). Endpoints are preserved exactly.
         """
         return self._solver.shortest_path(start, end)
 
     def assemble_connected(self, sweep_segments):
-        """Sequence sweeps and interleave ferry connections.
+        """Emit the ordered route: sweeps + interleaved ferry connections.
 
-        Returns a dict with the legacy shape:
-            {
-                "route_segments": [{segment_type, spraying, path, distance_m}, ...],
-                "combined_path": [(x, y), ...],
-                "distances": {"sweep_m", "ferry_m", "total_m"},
-            }
-
-        route_segments[0] is always a sweep. Ferries are inserted between
-        consecutive sweeps whenever the geodesic path between them has
-        non-zero length.
+        route_segments[0] is always a sweep; ferries appear only when
+        consecutive sweeps need an obstacle-aware jump.
         """
         valid = [s for s in (sweep_segments or [])
                  if s and len(s.get('path', [])) >= 2]
@@ -158,8 +119,8 @@ class PathAssembler:
                 cur_start = sw['path'][0]
                 ferry_path, ferry_d = self._solver.shortest_path(prev_end, cur_start)
                 if ferry_d > 1e-9 and len(ferry_path) >= 2:
-                    # Ferry inherits destination cell_id so the segmenter sees
-                    # a clean cell transition at the boundary.
+                    # Ferry inherits the destination's cell_id so the
+                    # segmenter sees a clean transition.
                     ferry_rec = self._segment_record(ferry_path, 'ferry', False)
                     ferry_rec['cell_id'] = sw.get('cell_id')
                     route_segments.append(ferry_rec)
@@ -179,10 +140,6 @@ class PathAssembler:
                 'total_m': float(sweep_m + ferry_m),
             },
         }
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _pts_equal(a, b, tol=1e-6):

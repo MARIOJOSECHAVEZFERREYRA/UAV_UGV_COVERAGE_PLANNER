@@ -6,23 +6,17 @@ from shapely.validation import make_valid
 
 
 class BoustrophedonPlanner:
-    """
-    Boustrophedon (zig-zag) sweep generation.
+    """Zig-zag sweep generator for a convex(ish) polygon cell.
 
-    # Rotates polygon to align sweeps horizontally,     
-    scans parallel lines at spray_width                 
-    # intervals (alternating direction), rotates        
-    segments back, clips against obstacles.             
-    # Returns typed sweep segments only — ferry         
-    connections are built by PathAssembler.
+    Rotates the polygon to align sweeps horizontally, scans parallel
+    lines spaced by ``spray_width`` (alternating direction), rotates
+    results back, and clips against optional obstacles. Returns only
+    typed sweep segments — ferries between sweeps are built later by
+    PathAssembler.
     """
 
     def __init__(self, spray_width=5.0):
         self.spray_width = spray_width
-
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
 
     def generate_path(self, polygon, angle_deg, global_y_origin=None, rotation_origin=None, obstacles=None):
         polygon = self._validate_polygon(polygon)
@@ -42,10 +36,6 @@ class BoustrophedonPlanner:
 
         return self._build_result(angle_deg, sweep_segments, n_passes)
 
-    # ------------------------------------------------------------------
-    # Pipeline stages
-    # ------------------------------------------------------------------
-
     def _validate_polygon(self, polygon):
         if not polygon.is_valid:
             polygon = make_valid(polygon)
@@ -54,11 +44,10 @@ class BoustrophedonPlanner:
         return polygon
 
     def _scan_sweeps(self, rotated_poly, global_y_origin):
-        """Scan horizontal sweep lines across the rotated polygon.
+        """Scan horizontal rows at swath spacing and return the raw segments.
 
-        Returns (raw_segments, n_passes_with_segments) where raw_segments is
-        a list of coordinate lists and n_passes counts rows that had at least
-        one intersection (used for turn_count).
+        Returns ``(raw_segments, n_passes)`` where n_passes counts rows
+        that produced at least one intersection (used for turn_count).
         """
         min_x, min_y, max_x, max_y = rotated_poly.bounds
         sweep_ext = (max_x - min_x) + 1.0
@@ -111,7 +100,6 @@ class BoustrophedonPlanner:
         return restored
 
     def _build_sweep_records(self, restored_segments):
-        """Convert coordinate lists to typed segment dicts."""
         return [
             self._segment_record(coords, segment_type="sweep", spraying=True)
             for coords in restored_segments
@@ -148,17 +136,13 @@ class BoustrophedonPlanner:
             "metrics": {
                 "spray_distance_m": float(spray_distance_m),
                 "coverage_area_m2": float(spray_distance_m * self.spray_width),
-                # Turns = rows with segments - 1; obstacle clipping produces ferries, not turns.
+                # Turns are row transitions; clip fragments are ferries, not turns.
                 "turn_count": max(0, n_passes - 1),
             },
         }
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
     def _first_y(self, global_y_origin, min_y):
-        """Compute the Y coordinate of the first sweep line."""
+        """Align the first sweep line to the shared global_y_origin."""
         if global_y_origin is not None:
             first_y = global_y_origin + (self.spray_width / 2.0)
             if first_y < min_y:
