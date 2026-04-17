@@ -90,6 +90,12 @@ Optimizer contract:
         #Build the segmenter and split the route into mission cycles.
         #The subclass chooses static or dynamic segmentation.
         segmenter = self._build_segmenter(drone, app_rate, speed_kmh, real_swath, energy_model)
+        # flight_polygon: the raw polygon with all obstacles intact as
+        # holes. safe_polygon has boundary-adjacent obstacles fused into
+        # the exterior (margin reduction side-effect), which hides them
+        # from the geodesic solver. Flight routing must use the raw
+        # obstacles to avoid crossing them.
+        self._flight_polygon = polygon
         mission_cycles = self._segment(segmenter, safe_polygon, route_segments, base_point, rendezvous_planner)
         rv_infeasibility = getattr(self, "_rv_infeasibility", None)
 
@@ -424,7 +430,11 @@ class DynamicMissionPlanner(MissionPlanner):
         return energy_model, rendezvous_planner
 
     def _segment(self, segmenter, safe_polygon, route_segments, base_point, rendezvous_planner):
-        plan = rendezvous_planner.plan_dynamic_cycles_dp(segmenter, safe_polygon, route_segments)
+        flight_polygon = getattr(self, "_flight_polygon", None)
+        plan = rendezvous_planner.plan_dynamic_cycles_dp(
+            segmenter, safe_polygon, route_segments,
+            flight_polygon=flight_polygon,
+        )
         # Transient flag consumed by plan_mission immediately after _segment
         # returns. Do not rely on it outside a single plan_mission invocation.
         # Kept as side channel so StaticMissionPlanner._segment can continue

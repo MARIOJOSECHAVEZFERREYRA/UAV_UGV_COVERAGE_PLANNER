@@ -309,7 +309,8 @@ class RendezvousPlanner:
     # PLANIFICACION DE CICLOS CON UGV MOVIL
     # ------------------------------------------------------------------
 
-    def plan_dynamic_cycles(self, segmenter, polygon, route_segments, rv_plan=None):
+    def plan_dynamic_cycles(self, segmenter, polygon, route_segments,
+                            rv_plan=None, flight_polygon=None):
         """
         Builds mission cycles with dynamic rendezvous for mobile UGV.
 
@@ -365,7 +366,10 @@ class RendezvousPlanner:
                 return energy_model.energy_transit(distance_m, q_reagent)
             return fn
 
-        assembler = PathAssembler(polygon)
+        # Use flight_polygon if provided so the geodesic solver sees all
+        # original obstacles (including boundary-adjacent ones that the
+        # margin reducer fused into the safe_polygon exterior).
+        assembler = PathAssembler(flight_polygon if flight_polygon is not None else polygon)
         energy_model = segmenter.energy_model
         usable_energy = energy_model.usable_energy_wh()
         reserve_wh = energy_model.reserve_wh_mobile()
@@ -785,7 +789,8 @@ class RendezvousPlanner:
                 + self.beta * flight_time
                 + self.gamma * travel_ugv)
 
-    def plan_dynamic_cycles_dp(self, segmenter, polygon, route_segments):
+    def plan_dynamic_cycles_dp(self, segmenter, polygon, route_segments,
+                               flight_polygon=None):
         """Two-pass DP-optimised variant of plan_dynamic_cycles.
 
         Pass 1 runs the greedy planner to discover cut positions and drone
@@ -799,7 +804,8 @@ class RendezvousPlanner:
         drift is small; the forced-RV pass falls back to greedy for any
         cut where the DP-chosen candidate has become infeasible.
         """
-        greedy = self.plan_dynamic_cycles(segmenter, polygon, route_segments)
+        greedy = self.plan_dynamic_cycles(
+            segmenter, polygon, route_segments, flight_polygon=flight_polygon)
         if greedy.get("infeasible"):
             return greedy
         cuts = greedy.get("cut_descriptors", [])
@@ -810,4 +816,5 @@ class RendezvousPlanner:
         if rv_plan is None:
             return greedy
         return self.plan_dynamic_cycles(
-            segmenter, polygon, route_segments, rv_plan=rv_plan)
+            segmenter, polygon, route_segments, rv_plan=rv_plan,
+            flight_polygon=flight_polygon)
