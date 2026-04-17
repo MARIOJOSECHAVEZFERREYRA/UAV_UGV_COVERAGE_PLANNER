@@ -1,5 +1,6 @@
 from shapely.geometry import Polygon, LineString, Point
 
+from ..utils.geometry import pts_equal
 from ..algorithms.routing.strategy import StrategyFactory
 from ..algorithms.coverage.margin import MarginReducer
 from ..algorithms.energy.segmentation import MissionSegmenter
@@ -323,10 +324,7 @@ Optimizer contract:
                     combined.extend(path)
         return combined
 
-    @staticmethod
-    #decides whether the boundary point between two paths is already duplicated
-    def _pts_equal(a, b, tol=1e-6):
-        return abs(a[0] - b[0]) < tol and abs(a[1] - b[1]) < tol
+    _pts_equal = staticmethod(pts_equal)
 
 
 class StaticMissionPlanner(MissionPlanner):

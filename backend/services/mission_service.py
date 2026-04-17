@@ -186,11 +186,14 @@ def compute_mission(db: Session, mission: Mission) -> Mission:
                     continue
 
             base = cycle.get("base_point")
-            return {
+            result = {
                 "segments": segments,
                 "base_point": serialize_point(base),
                 "swath_width": float(cycle.get("swath_width", 0.0)),
             }
+            if "rv_wait_s" in cycle:
+                result["rv_wait_s"] = float(cycle["rv_wait_s"])
+            return result
 
         try:
             mission.mission_cycles_json = json.dumps(
@@ -215,12 +218,20 @@ def compute_mission(db: Session, mission: Mission) -> Mission:
 
                 seg_type = _map_segment_type(explicit_type)
 
-                # Add waypoint for p1 (with dedup and type update at boundaries)
-                if prev_pt == p1:
-                    if waypoints:
-                        waypoints[-1].waypoint_type = seg_type
-                        waypoints[-1].cycle_index = cycle_idx
+                # Dedup at same coordinate: update type within the same
+                # cycle, but never overwrite across cycle boundaries (the
+                # base waypoint must remain as separator so the frontend
+                # splits deadhead runs per cycle).
+                same_pt = (prev_pt == p1)
+                can_merge = (same_pt and waypoints
+                             and waypoints[-1].waypoint_type != WaypointType.base
+                             and waypoints[-1].cycle_index == cycle_idx)
+                if can_merge:
+                    waypoints[-1].waypoint_type = seg_type
                 else:
+                    # New coordinate, or cross-cycle boundary at same
+                    # coordinate (after a base waypoint): always emit a
+                    # fresh waypoint so each cycle owns its endpoints.
                     waypoints.append(
                         Waypoint(
                             mission_id=mission.id,
@@ -249,9 +260,14 @@ def compute_mission(db: Session, mission: Mission) -> Mission:
                     seq += 1
                     prev_pt = p2
 
-            # Base point at end of cycle
+            # Base waypoint at end of every cycle: unconditional insert so
+            # the frontend always sees a "base" separator between cycles.
+            # This prevents adjacent deadhead runs from merging.
             cycle_base = tuple(cycle.get("base_point", [0, 0]))
-            if prev_pt != cycle_base:
+            if prev_pt == cycle_base and waypoints:
+                waypoints[-1].waypoint_type = WaypointType.base
+                waypoints[-1].cycle_index = cycle_idx
+            else:
                 waypoints.append(
                     Waypoint(
                         mission_id=mission.id,
@@ -263,7 +279,7 @@ def compute_mission(db: Session, mission: Mission) -> Mission:
                     )
                 )
                 seq += 1
-                prev_pt = cycle_base
+            prev_pt = cycle_base
 
         db.add_all(waypoints)
 
