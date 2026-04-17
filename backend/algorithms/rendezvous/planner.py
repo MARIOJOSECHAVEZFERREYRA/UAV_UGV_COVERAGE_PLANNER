@@ -336,8 +336,12 @@ class RendezvousPlanner:
         reserve_wh = energy_model.reserve_wh_mobile()
         v_uav = float(segmenter.drone.speed_max_ms)
 
+        # Kinematic model: the UGV stays parked at ugv_distance_along
+        # until the planner commits to a rendezvous. It does not drift
+        # forward during drone flight. The UGV travel time for a chosen
+        # candidate is accounted for inside find_best_rendezvous (as
+        # (d_along - ugv_distance_along) / v_ugv).
         ugv_distance_along = 0.0
-        t_ugv_ref = 0.0  # mission time when ugv_distance_along was last set
         energy_remaining = usable_energy
         liquid_remaining = segmenter.tank_capacity
         t = 0.0
@@ -382,17 +386,10 @@ class RendezvousPlanner:
             t_step = segmenter._segment_time(seg_type, dist)
             t_after = t + t_step
 
-            # UGV advances at v_ugv during drone flight.  Query uses
-            # the real UGV position at the time the drone would finish
-            # this segment.
-            ugv_s = min(
-                ugv_distance_along + self.v_ugv * max(0.0, t_after - t_ugv_ref),
-                self.total_length,
-            )
             rv_after = self.find_best_rendezvous(
                 uav_pos=p2,
                 uav_energy_rem=energy_remaining - energy_step,
-                ugv_distance_along=ugv_s,
+                ugv_distance_along=ugv_distance_along,
                 t_current=t_after,
                 v_uav=v_uav,
                 transit_energy_fn=_transit_fn(energy_model, liquid_after),
@@ -434,14 +431,10 @@ class RendezvousPlanner:
 
             resume_pos = uav_pos
 
-            ugv_s = min(
-                ugv_distance_along + self.v_ugv * max(0.0, t - t_ugv_ref),
-                self.total_length,
-            )
             rv = self.find_best_rendezvous(
                 uav_pos=uav_pos,
                 uav_energy_rem=energy_remaining,
-                ugv_distance_along=ugv_s,
+                ugv_distance_along=ugv_distance_along,
                 t_current=t,
                 v_uav=v_uav,
                 transit_energy_fn=_transit_fn(energy_model, liquid_remaining),
@@ -494,10 +487,8 @@ class RendezvousPlanner:
             meet_time = max(rv['t_uav_arrival'], rv['t_ugv_arrival'])
             t = meet_time + self.t_service
 
-            # UGV is at the RV point after service.  Reset reference
-            # time so it resumes advancing from here during next cycle.
+            # UGV parks at the RV point after service.
             ugv_distance_along = rv['distance_along']
-            t_ugv_ref = t
 
             energy_remaining = usable_energy
             liquid_remaining = segmenter.tank_capacity
@@ -530,14 +521,10 @@ class RendezvousPlanner:
                 uav_pos = current_cycle_segments[-1]['p2']
 
             # Closing deadhead: last work point → final RV on UGV polyline
-            ugv_s = min(
-                ugv_distance_along + self.v_ugv * max(0.0, t - t_ugv_ref),
-                self.total_length,
-            )
             rv_final = self.find_best_rendezvous(
                 uav_pos=uav_pos,
                 uav_energy_rem=energy_remaining,
-                ugv_distance_along=ugv_s,
+                ugv_distance_along=ugv_distance_along,
                 t_current=t,
                 v_uav=v_uav,
                 transit_energy_fn=_transit_fn(energy_model, liquid_remaining),

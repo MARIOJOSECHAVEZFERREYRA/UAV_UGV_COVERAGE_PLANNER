@@ -143,34 +143,37 @@ def check_dynamic_infeasible_synthetic(feasible_result):
     """Bypass the grid search and exercise plan_dynamic_cycles directly.
 
     Reuses the real route_segments from the feasible run (so the route is
-    a valid product of the optimizer), but swaps in a tiny stub UGV polyline
-    far from the field work. With monotonic advance, after the UGV reaches
-    the stub's end no forward candidates exist and later segments cannot
-    find a reachable rendezvous — the exact branch we rewired.
+    a valid product of the optimizer), but swaps in a remote UGV polyline
+    placed far outside the drone's energy envelope. Under the parked-UGV
+    kinematic model the drone can only rendezvous at polyline candidates
+    it can reach energetically; with the polyline kilometres away, the
+    very first rendezvous probe fails.
+
+    Note: exercises the "no_reachable_rendezvous at cut 0, no partial
+    cycle to close" path. The "close partial cycle with committed sweeps"
+    branch is harder to trigger under the parked-UGV model — kept in
+    code for robustness even though this test does not reach it.
     """
-    print("\n=== [2/3] Dynamic mission — stub polyline forcing infeasibility ===")
+    print("\n=== [2/3] Dynamic mission — remote polyline forcing infeasibility ===")
     from backend.algorithms.rendezvous.planner import RendezvousPlanner
     from backend.algorithms.energy.segmentation import MissionSegmenter
 
     drone, em = _drone_and_model()
 
-    field = _load_field("tests/test_fields/dynamic/polyline_diagonal.json")
     route_segments = feasible_result.get("route_segments", [])
     safe = feasible_result.get("safe_polygon")
     assert route_segments, "feasible run produced no route_segments"
     assert safe is not None, "feasible run produced no safe_polygon"
 
-    # Long polyline that starts next to the field and then plunges far
-    # south. Early candidates are reachable (first cycles succeed), but
-    # as monotonic advance forces later candidates further down the
-    # plunge, they fall out of energy range. This exercises the
-    # "close partial cycle with committed sweeps" branch.
-    ugv_polyline = [(-40.0, -30.0), (-40.0, -80.0), (-40.0, -5000.0)]
+    # Polyline kilometres from the field: no candidate is reachable with
+    # any realistic drone energy budget, so the very first rendezvous
+    # probe returns infeasible.
+    ugv_polyline = [(50000.0, 50000.0), (50005.0, 50000.0)]
     rp = RendezvousPlanner(
         ugv_polyline=ugv_polyline, v_ugv=2.0, t_service=300.0,
     )
     print(f"  route segments={len(route_segments)}  polyline_len={rp.total_length:.1f} m"
-          f"  polyline tail at {ugv_polyline[-1]}")
+          f"  polyline at {ugv_polyline[0]}")
 
     segmenter = MissionSegmenter(
         drone, target_rate_l_ha=20.0, work_speed_kmh=5.0 * 3.6,

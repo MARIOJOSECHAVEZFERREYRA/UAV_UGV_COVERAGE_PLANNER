@@ -69,14 +69,16 @@ def simulate_mission_with_rendezvous(route_segments, energy_model,
     else:
         uav_pos = (float(first_pt[0]), float(first_pt[1]))
 
+    # Kinematic model: UGV is parked at current_s until the planner
+    # commits to a rendezvous. It does not drift forward during drone
+    # flight. UGV travel after commit is accounted for when computing
+    # t_ugv_arrival below.
     current_s = 0.0
-    last_advance_t = 0.0
     t = 0.0
     E_rem = e_max
     Q_rem = q_max
     total_wait_uav = 0.0
     n_rendezvous = 0
-    polyline_len = rendezvous_planner.total_length
 
     i = 0
     n = len(route_segments)
@@ -89,15 +91,7 @@ def simulate_mission_with_rendezvous(route_segments, energy_model,
         if len(path) < 2 or dist < 1e-9:
             i += 1
             continue
-
-        # Advance the UGV monotonically up to the current mission time
-        # so every feasibility probe sees its real position.
-        if t > last_advance_t and current_s < polyline_len:
-            current_s = min(
-                polyline_len,
-                current_s + v_ugv * (t - last_advance_t),
-            )
-        last_advance_t = t
+        # meeting point (updated at line current_s = rv_s below).
 
         if seg_type == 'sweep':
             e_seg = energy_model.energy_straight(dist, Q_rem)
@@ -163,7 +157,8 @@ def simulate_mission_with_rendezvous(route_segments, energy_model,
 
         E_rem -= e_to_rv
         t_uav_arrival = t + t_to_rv
-        t_ugv_arrival = rv_s / v_ugv
+        d_ugv = max(0.0, rv_s - current_s)
+        t_ugv_arrival = t + d_ugv / v_ugv
         wait = max(0.0, t_ugv_arrival - t_uav_arrival)
 
         t = max(t_uav_arrival, t_ugv_arrival) + t_service
