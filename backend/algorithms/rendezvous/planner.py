@@ -18,8 +18,8 @@ class RendezvousPlanner:
     """
 
     def __init__(self, ugv_polyline, v_ugv, t_service,
-                 alpha=1.0, beta=None, gamma=0.3, candidate_spacing=50.0,
-                 v_uav=10.0, uav_priority=2.0):
+                 alpha=1.0, beta=None, gamma=0.3, candidate_spacing=None,
+                 v_uav=10.0, uav_priority=2.0, target_candidates=20):
         """
         Parameters
         ----------
@@ -58,9 +58,16 @@ class RendezvousPlanner:
         if beta is None:
             beta = self.gamma * float(v_uav) / self.v_ugv * float(uav_priority)
         self.beta = float(beta)
+        self.total_length = self._compute_polyline_length()
+        if candidate_spacing is None:
+            # Adaptive: ~target_candidates points regardless of polyline size.
+            # Short polylines get finer granularity; long polylines stay
+            # bounded to avoid DP blow-up.
+            candidate_spacing = min(
+                50.0, max(self.total_length / float(target_candidates), 5.0),
+            )
         self.candidate_spacing = float(candidate_spacing)
 
-        self.total_length = self._compute_polyline_length()
         # Candidatos precalculados para evitar recomputar en cada llamada al fitness
         self._candidates = self._discretize_polyline(self.candidate_spacing)
 
