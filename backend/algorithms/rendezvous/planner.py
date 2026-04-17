@@ -302,7 +302,7 @@ class RendezvousPlanner:
     # PLANIFICACION DE CICLOS CON UGV MOVIL
     # ------------------------------------------------------------------
 
-    def plan_dynamic_cycles(self, segmenter, polygon, route_segments):
+    def plan_dynamic_cycles(self, segmenter, polygon, route_segments, rv_plan=None):
         """
         Builds mission cycles with dynamic rendezvous for mobile UGV.
 
@@ -314,6 +314,11 @@ class RendezvousPlanner:
 
         Parameters
         ----------
+        rv_plan : list[int] or None
+            Optional list of candidate indices to use for each cut (in order).
+            If None (default), uses greedy find_best_rendezvous. If provided,
+            forces rv_plan[cut_idx] as the chosen candidate at each cut; falls
+            back to greedy if the forced candidate is infeasible at runtime.
         segmenter : MissionSegmenter
             Pre-configured segmenter with drone params and energy model.
         polygon : Polygon
@@ -338,7 +343,15 @@ class RendezvousPlanner:
         reason = None
 
         if not route_segments:
-            return {"cycles": [], "infeasible": False, "reason": None}
+            return {"cycles": [], "infeasible": False, "reason": None,
+                    "cut_descriptors": []}
+
+        # Cut descriptors: one entry per service rendezvous. Records the
+        # drone state at the moment the cut was taken, plus the forced
+        # candidate index used (or None if greedy chose). Consumed by the
+        # DP post-processor in plan_dynamic_cycles_dp.
+        cut_descriptors = []
+        cut_counter = 0
 
         def _transit_fn(energy_model, q_reagent):
             def fn(distance_m):
@@ -446,15 +459,25 @@ class RendezvousPlanner:
 
             resume_pos = uav_pos
 
-            rv = self.find_best_rendezvous(
-                uav_pos=uav_pos,
-                uav_energy_rem=energy_remaining,
-                ugv_distance_along=ugv_distance_along,
-                t_current=t,
-                v_uav=v_uav,
-                transit_energy_fn=_transit_fn(energy_model, liquid_remaining),
-                e_reserve=reserve_wh,
+            # Record the cut state so the DP post-processor can re-optimise
+            # rv assignment over all cuts. Stored before the RV is chosen.
+            cut_descriptors.append({
+                "uav_pos": uav_pos,
+                "energy": energy_remaining,
+                "liquid": liquid_remaining,
+                "t_current": t,
+                "v_uav": v_uav,
+                "ugv_d_along_entry": ugv_distance_along,
+                "e_reserve": reserve_wh,
+                "is_closing": False,
+            })
+
+            rv = self._resolve_rv(
+                rv_plan, cut_counter, uav_pos, energy_remaining,
+                ugv_distance_along, t, v_uav,
+                _transit_fn(energy_model, liquid_remaining), reserve_wh,
             )
+            cut_counter += 1
 
             if not rv['feasible']:
                 # No reachable rendezvous respecting monotonicity + energy +
@@ -536,15 +559,22 @@ class RendezvousPlanner:
                 uav_pos = current_cycle_segments[-1]['p2']
 
             # Closing deadhead: last work point → final RV on UGV polyline
-            rv_final = self.find_best_rendezvous(
-                uav_pos=uav_pos,
-                uav_energy_rem=energy_remaining,
-                ugv_distance_along=ugv_distance_along,
-                t_current=t,
-                v_uav=v_uav,
-                transit_energy_fn=_transit_fn(energy_model, liquid_remaining),
-                e_reserve=0.0,  # final landing, no subsequent flight
+            cut_descriptors.append({
+                "uav_pos": uav_pos,
+                "energy": energy_remaining,
+                "liquid": liquid_remaining,
+                "t_current": t,
+                "v_uav": v_uav,
+                "ugv_d_along_entry": ugv_distance_along,
+                "e_reserve": 0.0,
+                "is_closing": True,
+            })
+            rv_final = self._resolve_rv(
+                rv_plan, cut_counter, uav_pos, energy_remaining,
+                ugv_distance_along, t, v_uav,
+                _transit_fn(energy_model, liquid_remaining), 0.0,
             )
+            cut_counter += 1
 
             if rv_final['feasible']:
                 rv_point = rv_final['point']
@@ -571,4 +601,206 @@ class RendezvousPlanner:
                 "base_point": final_base,
             })
 
-        return {"cycles": cycles, "infeasible": infeasible, "reason": reason}
+        return {"cycles": cycles, "infeasible": infeasible, "reason": reason,
+                "cut_descriptors": cut_descriptors}
+
+    # ------------------------------------------------------------------
+    # ASIGNACION GLOBAL DE RENDEZVOUS VIA PROGRAMACION DINAMICA
+    # ------------------------------------------------------------------
+
+    def _resolve_rv(self, rv_plan, cut_idx, uav_pos, uav_energy_rem,
+                    ugv_distance_along, t_current, v_uav,
+                    transit_energy_fn, e_reserve):
+        """Pick the rendezvous for this cut.
+
+        If rv_plan is provided and the forced candidate is feasible, use it.
+        Otherwise fall back to greedy. Returns the same dict shape as
+        find_best_rendezvous.
+        """
+        if rv_plan is None or cut_idx >= len(rv_plan):
+            return self.find_best_rendezvous(
+                uav_pos=uav_pos, uav_energy_rem=uav_energy_rem,
+                ugv_distance_along=ugv_distance_along, t_current=t_current,
+                v_uav=v_uav, transit_energy_fn=transit_energy_fn,
+                e_reserve=e_reserve,
+            )
+        cand_idx = rv_plan[cut_idx]
+        if cand_idx is None or cand_idx < 0 or cand_idx >= len(self._candidates):
+            return self.find_best_rendezvous(
+                uav_pos=uav_pos, uav_energy_rem=uav_energy_rem,
+                ugv_distance_along=ugv_distance_along, t_current=t_current,
+                v_uav=v_uav, transit_energy_fn=transit_energy_fn,
+                e_reserve=e_reserve,
+            )
+        forced = self._evaluate_candidate(
+            self._candidates[cand_idx], uav_pos, uav_energy_rem,
+            ugv_distance_along, t_current, v_uav, transit_energy_fn, e_reserve,
+        )
+        if forced is None:
+            # Forced candidate infeasible at runtime (energy or monotonicity
+            # shifted between DP pass and reassembly). Fall back to greedy so
+            # the mission still completes.
+            return self.find_best_rendezvous(
+                uav_pos=uav_pos, uav_energy_rem=uav_energy_rem,
+                ugv_distance_along=ugv_distance_along, t_current=t_current,
+                v_uav=v_uav, transit_energy_fn=transit_energy_fn,
+                e_reserve=e_reserve,
+            )
+        return forced
+
+    def _evaluate_candidate(self, candidate, uav_pos, uav_energy_rem,
+                            ugv_distance_along, t_current, v_uav,
+                            transit_energy_fn, e_reserve):
+        """Compute the result dict for a specific candidate, or None if
+        infeasible (monotonicity or energy)."""
+        d_along = candidate['distance_along']
+        if d_along < ugv_distance_along - 1e-3:
+            return None
+        v_uav_safe = max(float(v_uav), 1e-9)
+        cand_point = candidate['point']
+        d_uav = math.hypot(cand_point[0] - uav_pos[0], cand_point[1] - uav_pos[1])
+        e_needed = transit_energy_fn(d_uav)
+        if e_needed > uav_energy_rem - e_reserve:
+            return None
+        flight_time_uav = d_uav / v_uav_safe
+        t_uav_arrival = t_current + flight_time_uav
+        d_ugv = max(0.0, d_along - ugv_distance_along)
+        travel_time_ugv = d_ugv / self.v_ugv
+        t_ugv_arrival = t_current + travel_time_ugv
+        t_wait_uav = max(0.0, t_ugv_arrival - t_uav_arrival)
+        cost = (self.alpha * t_wait_uav
+                + self.beta * flight_time_uav
+                + self.gamma * travel_time_ugv)
+        return {
+            'feasible': True,
+            'point': cand_point,
+            'distance_along': d_along,
+            'd_uav': d_uav,
+            'd_ugv': d_ugv,
+            'flight_time_uav': flight_time_uav,
+            'travel_time_ugv': travel_time_ugv,
+            't_uav_arrival': t_uav_arrival,
+            't_ugv_arrival': t_ugv_arrival,
+            't_wait_uav': t_wait_uav,
+            'cost': cost,
+        }
+
+    def _solve_rv_dp(self, cut_descriptors, energy_model):
+        """Given a fixed sequence of cut states, assign one polyline
+        candidate to each cut so the total cost (sum of per-cut costs with
+        the same formula as find_best_rendezvous) is minimised. Monotonicity
+        (d_along non-decreasing) and per-cut energy feasibility are enforced.
+
+        Returns a list of candidate indices (one per cut) or None if no
+        feasible global assignment exists.
+
+        Complexity: O(N * M^2) with N = cuts, M = candidates.
+        """
+        cuts = cut_descriptors
+        N = len(cuts)
+        M = len(self._candidates)
+        if N == 0 or M == 0:
+            return None
+
+        INF = float('inf')
+        dp = [[INF] * M for _ in range(N)]
+        prev = [[-1] * M for _ in range(N)]
+
+        # Fill row 0: UGV enters at d_along = 0.
+        for j in range(M):
+            c = self._candidates[j]
+            cost = self._dp_cost(cuts[0], c, 0.0, energy_model)
+            if cost is not None:
+                dp[0][j] = cost
+
+        # Fill rows 1..N-1.
+        for i in range(1, N):
+            cut = cuts[i]
+            for j in range(M):
+                c = self._candidates[j]
+                d_along_j = c['distance_along']
+                best_total = INF
+                best_k = -1
+                for k in range(M):
+                    if dp[i - 1][k] == INF:
+                        continue
+                    entry = self._candidates[k]['distance_along']
+                    if d_along_j < entry - 1e-3:
+                        continue
+                    cost_ij = self._dp_cost(cut, c, entry, energy_model)
+                    if cost_ij is None:
+                        continue
+                    total = dp[i - 1][k] + cost_ij
+                    if total < best_total:
+                        best_total = total
+                        best_k = k
+                if best_k >= 0:
+                    dp[i][j] = best_total
+                    prev[i][j] = best_k
+
+        # Pick the min entry in the last row.
+        best_final = -1
+        best_total = INF
+        for j in range(M):
+            if dp[N - 1][j] < best_total:
+                best_total = dp[N - 1][j]
+                best_final = j
+        if best_final < 0:
+            return None
+
+        # Trace back.
+        result = [-1] * N
+        result[N - 1] = best_final
+        for i in range(N - 1, 0, -1):
+            result[i - 1] = prev[i][result[i]]
+            if result[i - 1] < 0:
+                return None
+        return result
+
+    def _dp_cost(self, cut, candidate, entry_d_along, energy_model):
+        """Cost of serving `cut` at `candidate` with UGV entering at
+        `entry_d_along`. None if infeasible."""
+        d_along = candidate['distance_along']
+        if d_along < entry_d_along - 1e-3:
+            return None
+        cand_point = candidate['point']
+        uav_pos = cut['uav_pos']
+        d_uav = math.hypot(cand_point[0] - uav_pos[0], cand_point[1] - uav_pos[1])
+        e_needed = energy_model.energy_transit(d_uav, cut['liquid'])
+        if e_needed > cut['energy'] - cut['e_reserve']:
+            return None
+        v_uav = max(float(cut['v_uav']), 1e-9)
+        flight_time = d_uav / v_uav
+        d_ugv = max(0.0, d_along - entry_d_along)
+        travel_ugv = d_ugv / self.v_ugv
+        t_wait = max(0.0, travel_ugv - flight_time)
+        return (self.alpha * t_wait
+                + self.beta * flight_time
+                + self.gamma * travel_ugv)
+
+    def plan_dynamic_cycles_dp(self, segmenter, polygon, route_segments):
+        """Two-pass DP-optimised variant of plan_dynamic_cycles.
+
+        Pass 1 runs the greedy planner to discover cut positions and drone
+        state at each cut. Pass 2 solves a DP over those cut positions to
+        assign the globally-optimal candidate per cut (under the same cost
+        function as greedy). Pass 3 re-runs the planner with the DP
+        assignments forced.
+
+        Cut points can drift slightly between passes because the fly-back
+        from a different RV changes post-service energy. In practice the
+        drift is small; the forced-RV pass falls back to greedy for any
+        cut where the DP-chosen candidate has become infeasible.
+        """
+        greedy = self.plan_dynamic_cycles(segmenter, polygon, route_segments)
+        if greedy.get("infeasible"):
+            return greedy
+        cuts = greedy.get("cut_descriptors", [])
+        if len(cuts) < 2:
+            # Nothing to optimise globally.
+            return greedy
+        rv_plan = self._solve_rv_dp(cuts, segmenter.energy_model)
+        if rv_plan is None:
+            return greedy
+        return self.plan_dynamic_cycles(
+            segmenter, polygon, route_segments, rv_plan=rv_plan)

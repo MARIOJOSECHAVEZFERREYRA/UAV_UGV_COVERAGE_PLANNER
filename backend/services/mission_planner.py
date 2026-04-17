@@ -424,7 +424,7 @@ class DynamicMissionPlanner(MissionPlanner):
         return energy_model, rendezvous_planner
 
     def _segment(self, segmenter, safe_polygon, route_segments, base_point, rendezvous_planner):
-        plan = rendezvous_planner.plan_dynamic_cycles(segmenter, safe_polygon, route_segments)
+        plan = rendezvous_planner.plan_dynamic_cycles_dp(segmenter, safe_polygon, route_segments)
         # Transient flag consumed by plan_mission immediately after _segment
         # returns. Do not rely on it outside a single plan_mission invocation.
         # Kept as side channel so StaticMissionPlanner._segment can continue
