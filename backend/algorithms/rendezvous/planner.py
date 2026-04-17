@@ -308,13 +308,22 @@ class RendezvousPlanner:
 
         Returns
         -------
-        list[dict]
-            Full cycles with deadheads, same format as static pipeline.
+        dict
+            ``{"cycles": list[dict], "infeasible": bool, "reason": str|None}``.
+            ``cycles`` carries the full cycles with deadheads (same format as
+            the static pipeline). ``infeasible`` is True when the planner
+            could not finish the mission (no reachable rendezvous mid-route,
+            or no reachable final RV for the closing deadhead); in that case
+            the cycles already executed are still returned so the caller can
+            present partial progress, and ``reason`` describes the cause.
         """
         from ..coverage.path_assembler import PathAssembler
 
+        infeasible = False
+        reason = None
+
         if not route_segments:
-            return []
+            return {"cycles": [], "infeasible": False, "reason": None}
 
         def _transit_fn(energy_model, q_reagent):
             def fn(distance_m):
@@ -440,16 +449,29 @@ class RendezvousPlanner:
             )
 
             if not rv['feasible']:
-                # TODO: raise MissionInfeasibleError — currently falls back to
-                # continuing the segment to avoid aborting the mission silently.
-                atomic = segmenter._path_to_segments(normalized_path, seg_type, spraying)
-                current_cycle_segments.extend(atomic)
-                energy_remaining -= energy_step
-                liquid_remaining = liquid_after
-                t += t_step
-                uav_pos = p2
-                i += 1
-                continue
+                # No reachable rendezvous respecting monotonicity + energy +
+                # reserve. Stop the mission: do NOT execute the segment (that
+                # would burn energy the drone does not have). Close the
+                # partial cycle with whatever sweep work was already committed
+                # so the caller can present partial progress.
+                has_sweep_partial = any(
+                    s.get('segment_type') == 'sweep' for s in current_cycle_segments
+                )
+                if current_cycle_segments and has_sweep_partial:
+                    cycle_path = segmenter.segments_to_path(current_cycle_segments)
+                    cycles.append({
+                        "type": "work",
+                        "path": cycle_path,
+                        "segments": current_cycle_segments,
+                        "visual_groups": segmenter.compress_segments(current_cycle_segments),
+                        "swath_width": segmenter.swath_width,
+                        "base_point": uav_pos,
+                    })
+                infeasible = True
+                reason = "no_reachable_rendezvous"
+                # Clear so the closing-deadhead block below skips cleanly.
+                current_cycle_segments = []
+                break
 
             rv_point = rv['point']
 
@@ -530,7 +552,12 @@ class RendezvousPlanner:
                 current_cycle_segments.extend(dh_close)
                 final_base = rv_point
             else:
+                # No reachable final RV: the drone cannot return to the UGV
+                # polyline. Land in place and report infeasibility so the
+                # caller surfaces it to the user.
                 final_base = uav_pos
+                infeasible = True
+                reason = "no_reachable_final_rv"
 
             cycle_path = segmenter.segments_to_path(current_cycle_segments)
             cycles.append({
@@ -542,4 +569,4 @@ class RendezvousPlanner:
                 "base_point": final_base,
             })
 
-        return cycles
+        return {"cycles": cycles, "infeasible": infeasible, "reason": reason}

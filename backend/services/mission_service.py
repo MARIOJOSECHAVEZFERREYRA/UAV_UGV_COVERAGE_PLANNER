@@ -294,6 +294,9 @@ def compute_mission(db: Session, mission: Mission) -> Mission:
                 metrics_dict["_safe_polygon"] = [list(c) for c in safe_polygon.exterior.coords]
             except Exception:
                 pass
+        if result.get("rv_infeasible"):
+            metrics_dict["rv_warning"] = "infeasible_partial_mission"
+            metrics_dict["rv_warning_reason"] = result.get("rv_infeasible_reason")
         mission.metrics_json = json.dumps(metrics_dict)
         mission.status = MissionStatus.completed
 

@@ -91,6 +91,7 @@ Optimizer contract:
         #The subclass chooses static or dynamic segmentation.
         segmenter = self._build_segmenter(drone, app_rate, speed_kmh, real_swath, energy_model)
         mission_cycles = self._segment(segmenter, safe_polygon, route_segments, base_point, rendezvous_planner)
+        rv_infeasibility = getattr(self, "_rv_infeasibility", None)
 
         # 9. Metrics
         full_metrics, resource_data = self._compute_metrics_and_resources(
@@ -100,6 +101,7 @@ Optimizer contract:
         result = self._build_result(
             polygon, safe_polygon, mission_cycles, full_metrics, resource_data,
             best_angle, best_path, route_segments, gen_stats, planner_metrics, route_distances,
+            rv_infeasibility=rv_infeasibility,
         )
         self.last_result = result
         return result
@@ -269,7 +271,9 @@ Optimizer contract:
         )
         return full_metrics, resource_data
 
-    def _build_result(self, polygon, safe_polygon, mission_cycles, full_metrics, resource_data, best_angle, best_path, route_segments,gen_stats, planner_metrics, route_distances):
+    def _build_result(self, polygon, safe_polygon, mission_cycles, full_metrics, resource_data, best_angle, best_path, route_segments,gen_stats, planner_metrics, route_distances, rv_infeasibility=None):
+        rv_infeasible = bool(rv_infeasibility and rv_infeasibility.get("infeasible"))
+        rv_infeasible_reason = rv_infeasibility.get("reason") if rv_infeasibility else None
         return {
             "polygon": polygon,
             "safe_polygon": safe_polygon,
@@ -282,6 +286,8 @@ Optimizer contract:
             "gen_stats": gen_stats,
             "planner_metrics": planner_metrics,
             "route_distances": route_distances,
+            "rv_infeasible": rv_infeasible,
+            "rv_infeasible_reason": rv_infeasible_reason,
         }
 
     # ------------------------------------------------------------------
@@ -416,7 +422,16 @@ class DynamicMissionPlanner(MissionPlanner):
         return energy_model, rendezvous_planner
 
     def _segment(self, segmenter, safe_polygon, route_segments, base_point, rendezvous_planner):
-        return rendezvous_planner.plan_dynamic_cycles(segmenter, safe_polygon, route_segments)
+        plan = rendezvous_planner.plan_dynamic_cycles(segmenter, safe_polygon, route_segments)
+        # Transient flag consumed by plan_mission immediately after _segment
+        # returns. Do not rely on it outside a single plan_mission invocation.
+        # Kept as side channel so StaticMissionPlanner._segment can continue
+        # returning a plain list (tech debt: unify to a dict return later).
+        self._rv_infeasibility = {
+            "infeasible": bool(plan.get("infeasible", False)),
+            "reason": plan.get("reason"),
+        }
+        return plan.get("cycles", [])
 
     def _augment_metrics(self, full_metrics, opt_result, mission_cycles):
         # Extraer métricas de rendezvous de la misión realmente segmentada.
