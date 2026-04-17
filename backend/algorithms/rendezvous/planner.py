@@ -18,7 +18,8 @@ class RendezvousPlanner:
     """
 
     def __init__(self, ugv_polyline, v_ugv, t_service,
-                 alpha=1.0, beta=0.5, gamma=0.3, candidate_spacing=50.0):
+                 alpha=1.0, beta=None, gamma=0.3, candidate_spacing=50.0,
+                 v_uav=10.0, uav_priority=2.0):
         """
         Parameters
         ----------
@@ -30,19 +31,33 @@ class RendezvousPlanner:
             Duracion del servicio manual (recarga de bateria y reactivo) en segundos.
         alpha : float
             Peso de penalizacion por tiempo de espera del UAV [segundos].
-        beta : float
-            Peso de penalizacion por deadhead del UAV [adimensional, escala tiempo].
+        beta : float or None
+            Peso de penalizacion por deadhead del UAV. Si None (default),
+            se deriva de los otros parametros como
+            ``gamma * v_uav / v_ugv * uav_priority`` para que el costo
+            por metro de vuelo del dron y de avance del UGV quede
+            balanceado segun las velocidades reales del hardware.
         gamma : float
             Peso de penalizacion por avance del UGV [adimensional, escala tiempo].
         candidate_spacing : float
             Separacion entre candidatos discretizados sobre la polyline en metros.
+        v_uav : float
+            Velocidad de referencia del UAV para derivar el default de beta.
+            Ignorada si beta se pasa explicitamente.
+        uav_priority : float
+            Factor que escala cuan mas caro es un metro de vuelo del UAV
+            vs un metro de avance del UGV en la fitness. 1.0 = paridad
+            per-metro; >1.0 prefiere ahorrar avance del UGV a costa de
+            mas deadhead del dron. Solo afecta al default de beta.
         """
         self.ugv_polyline = [tuple(float(c) for c in p[:2]) for p in ugv_polyline]
         self.v_ugv = max(float(v_ugv), 1e-9)
         self.t_service = float(t_service)
         self.alpha = float(alpha)
-        self.beta = float(beta)
         self.gamma = float(gamma)
+        if beta is None:
+            beta = self.gamma * float(v_uav) / self.v_ugv * float(uav_priority)
+        self.beta = float(beta)
         self.candidate_spacing = float(candidate_spacing)
 
         self.total_length = self._compute_polyline_length()

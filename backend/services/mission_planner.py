@@ -414,10 +414,12 @@ class DynamicMissionPlanner(MissionPlanner):
     def _init_rendezvous(self, drone, energy_model):
         # Reuse the shared energy_model created by the base controller so the
         # GA optimizer and the segmenter work with the same physics instance.
+        # Pass v_uav so the planner can derive a speed-balanced default beta.
         rendezvous_planner = RendezvousPlanner(
             ugv_polyline=self._ugv_polyline,
             v_ugv=self._ugv_speed,
             t_service=self._ugv_t_service,
+            v_uav=float(drone.speed_max_ms),
         )
         return energy_model, rendezvous_planner
 
